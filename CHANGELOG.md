@@ -4,6 +4,27 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **SideStore reuses iPASide's certificate instead of replacing it.** The SideStore built
+  into the LiveContainer build now carries iPASide's own signing identity, baked into its
+  bundle the way iLoader's isideload does: `ALTCertificate.p12` encrypted with the
+  certificate's Apple `machineId`, plus `ALTCertificateID` and `ALTAppGroups` in the
+  framework `Info.plist`. When you sign into that SideStore with the **same** Apple ID
+  iPASide uses, it matches the serial, decrypts the identity and reuses it - so the two
+  share one certificate, nothing iPASide already signed is invalidated, and no extra
+  certificate slot is spent.
+
+  This does **not** remove SideStore's sign-in, and it was a mistake to describe it that
+  way while building it. SideStore needs an Apple session of its own to reach Apple's
+  developer API when it refreshes; a certificate is an identity, not a session. The
+  on-device refresh flow is: install the SideStore build, open it and sign in once with the
+  same Apple ID, connect a local device VPN, then refresh. The LiveContainer tab now states
+  the sign-in step first. Signing in with a *different* Apple ID makes SideStore mint its
+  own certificate and a second LiveContainer along with it.
+
 ## [1.1.1] - 2026-07-28
 
 ### Fixed

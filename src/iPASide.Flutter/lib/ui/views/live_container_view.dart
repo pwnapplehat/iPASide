@@ -370,8 +370,19 @@ class _SideStoreCard extends StatelessWidget {
               style: context.t.bodyMuted,
             ),
             const SizedBox(height: Space.s4),
-            // Two things SideStore needs that iPASide cannot provide, said plainly rather
-            // than left for the user to hit as errors.
+            // The steps SideStore needs that iPASide cannot do for it, said plainly rather
+            // than left for the user to hit as errors. Sign-in comes first: the baked
+            // certificate is reused during sign-in, it does not replace it.
+            const _Point(
+              icon: Icons.person_outline,
+              title: 'Sign in once, with the same Apple ID',
+              body: 'Open SideStore inside LiveContainer and sign in with the same '
+                  'Apple ID iPASide uses. iPASide has already baked its certificate in, '
+                  'so SideStore reuses that identity instead of replacing it \u2014 no '
+                  'extra certificate is spent. A different Apple ID makes SideStore mint '
+                  'its own, and a second LiveContainer along with it.',
+            ),
+            const SizedBox(height: Space.s4),
             const _Point(
               icon: Icons.vpn_lock_outlined,
               title: 'It needs a local tunnel',

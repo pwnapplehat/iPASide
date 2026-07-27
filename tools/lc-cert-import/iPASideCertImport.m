@@ -26,6 +26,7 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
 
 /* Written by iPASide over house_arrest; deleted by us once the import is verified. */
 static NSString *const kRequestFileName = @"iPASide-cert-import.plist";
@@ -40,6 +41,33 @@ static NSString *const kLCCertificateData = @"LCCertificateData";
 static NSString *const kLCCertificatePassword = @"LCCertificatePassword";
 static NSString *const kLCCertificateUpdateDate = @"LCCertificateUpdateDate";
 static NSString *const kLCAppGroupID = @"LCAppGroupID";
+
+/*
+ * Sign-in seeding: the second thing this dylib does.
+ *
+ * The +SideStore build carries SideStore, which refreshes apps on the device. SideStore
+ * authenticates by token when its keychain already holds an "adsid" and the Xcode
+ * GrandSlam token - the password-less branch of AuthenticationOperation.signIn. iPASide
+ * already has both for the account that signed LiveContainer, so seeding them means the
+ * built-in store is signed in the moment it opens, with no Apple ID prompt.
+ *
+ * The catch is where they go. LiveContainer hooks every keychain call a *guest* makes and
+ * forces it into a per-guest access group `TEAMID.com.kdt.livecontainer.shared.N`, where N
+ * is assigned at random when the guest's container is created. That hook is installed at
+ * guest launch, not here: this dylib runs in the LiveContainer host before any guest, so
+ * our own SecItemAdd is unhooked and the access group we name is the one the item lands in.
+ * The host is entitled to all 128 of those groups, so we write into every one of them -
+ * whichever N SideStore's guest is later assigned, its read finds the tokens waiting.
+ */
+static NSString *const kSignInFileName = @"iPASide-signin.plist";
+static NSString *const kSignInAdsid = @"AppleIDAdsid";
+static NSString *const kSignInXcodeToken = @"AppleIDXcodeToken";
+static NSString *const kSignInKeychainService = @"KeychainService";
+static NSString *const kSignInAccessGroups = @"AccessGroups";
+
+/* SideStore's KeychainAccess account names - its API, not ours. */
+static NSString *const kSideStoreAdsidAccount = @"appleIDAdsid";
+static NSString *const kSideStoreXcodeTokenAccount = @"appleIDXcodeToken";
 
 static void iPASideLog(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
 
@@ -111,13 +139,7 @@ static void iPASideConsumeRequest(NSString *requestPath) {
     }
 }
 
-__attribute__((constructor))
-static void iPASideSeedCertificate(void) {
-    NSString *documents = iPASideDocumentsPath();
-    if (documents.length == 0) {
-        return;
-    }
-
+static void iPASideSeedCertificate(NSString *documents) {
     NSString *requestPath = [documents stringByAppendingPathComponent:kRequestFileName];
     NSDictionary *request = iPASideReadRequest(requestPath);
     if (request == nil) {
@@ -171,4 +193,114 @@ static void iPASideSeedCertificate(void) {
     iPASideLog(@"imported %lu bytes into %@",
                (unsigned long)certificateData.length, groupID);
     iPASideConsumeRequest(requestPath);
+}
+
+/**
+ * Store one string where SideStore's KeychainAccess reads it: a generic-password item
+ * keyed by service + account, afterFirstUnlock, synchronizable - the exact attributes
+ * `Keychain(service:).accessibility(.afterFirstUnlock).synchronizable(true)` queries with.
+ * The access group is named explicitly, since the guest keychain hook that would supply
+ * it is not installed in the host where this runs. Any existing copy is removed first so a
+ * refresh replaces a rotated token rather than colliding. Returns YES on a stored item.
+ */
+static BOOL iPASideKeychainSet(NSString *service, NSString *account, NSString *accessGroup,
+                               NSString *value) {
+    NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
+    if (data == nil) {
+        return NO;
+    }
+
+    NSDictionary *identity = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: service,
+        (__bridge id)kSecAttrAccount: account,
+        (__bridge id)kSecAttrAccessGroup: accessGroup,
+        (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny,
+    };
+    SecItemDelete((__bridge CFDictionaryRef)identity);
+
+    NSDictionary *item = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrService: service,
+        (__bridge id)kSecAttrAccount: account,
+        (__bridge id)kSecAttrAccessGroup: accessGroup,
+        (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlock,
+        (__bridge id)kSecAttrSynchronizable: (__bridge id)kCFBooleanTrue,
+        (__bridge id)kSecValueData: data,
+    };
+    return SecItemAdd((__bridge CFDictionaryRef)item, NULL) == errSecSuccess;
+}
+
+/**
+ * Seed the built-in SideStore's sign-in tokens into every LiveContainer keychain group.
+ *
+ * Values are never logged: the request carries a live account token, and the point of
+ * consuming the file is that the token does not linger on disk. A request that stores
+ * nowhere is left in place to be inspected rather than silently dropped.
+ */
+static void iPASideSeedSignIn(NSString *documents) {
+    NSString *path = [documents stringByAppendingPathComponent:kSignInFileName];
+    if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        return;
+    }
+
+    NSDictionary *request = [NSDictionary dictionaryWithContentsOfFile:path];
+    if (![request isKindOfClass:NSDictionary.class]) {
+        iPASideLog(@"sign-in request at %@ is not a dictionary; ignoring", path);
+        return;
+    }
+
+    id adsid = request[kSignInAdsid];
+    id token = request[kSignInXcodeToken];
+    id service = request[kSignInKeychainService];
+    id groups = request[kSignInAccessGroups];
+
+    if (![adsid isKindOfClass:NSString.class] || ((NSString *)adsid).length == 0 ||
+        ![token isKindOfClass:NSString.class] || ((NSString *)token).length == 0 ||
+        ![service isKindOfClass:NSString.class] || ((NSString *)service).length == 0 ||
+        ![groups isKindOfClass:NSArray.class] || ((NSArray *)groups).count == 0) {
+        iPASideLog(@"sign-in request is missing a usable field; leaving it for inspection");
+        return;
+    }
+
+    NSUInteger stored = 0;
+    for (id group in (NSArray *)groups) {
+        if (![group isKindOfClass:NSString.class] || ((NSString *)group).length == 0) {
+            continue;
+        }
+        BOOL wroteAdsid = iPASideKeychainSet(service, kSideStoreAdsidAccount, group, adsid);
+        BOOL wroteToken = iPASideKeychainSet(service, kSideStoreXcodeTokenAccount, group, token);
+        if (wroteAdsid && wroteToken) {
+            stored++;
+        }
+    }
+
+    if (stored == 0) {
+        iPASideLog(@"could not store sign-in tokens in any of %lu groups; leaving the request",
+                   (unsigned long)((NSArray *)groups).count);
+        return;
+    }
+
+    iPASideLog(@"seeded sign-in tokens into %lu of %lu keychain groups",
+               (unsigned long)stored, (unsigned long)((NSArray *)groups).count);
+
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager removeItemAtPath:path error:&error]) {
+        iPASideLog(@"could not remove the sign-in request: %@", error.localizedDescription);
+    }
+}
+
+/**
+ * Both seeds run once, before LiveContainer's main(). Either request may be absent - a
+ * plain build with no SideStore never delivers a sign-in request, and a repeat install
+ * finds nothing left to do - so each is independently a no-op when its file is not there.
+ */
+__attribute__((constructor))
+static void iPASideSeed(void) {
+    NSString *documents = iPASideDocumentsPath();
+    if (documents.length == 0) {
+        return;
+    }
+    iPASideSeedCertificate(documents);
+    iPASideSeedSignIn(documents);
 }

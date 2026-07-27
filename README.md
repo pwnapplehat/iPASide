@@ -108,8 +108,10 @@ There is a full light theme too, and the sun in the title bar switches to it.
   expiry of their own. Verified end to end on an iPhone 8 Plus with a free Apple ID.
 - **Refresh on the phone, no PC.** iPASide installs the LiveContainer build that carries
   SideStore and hands it this computer's pairing file, so the phone can re-sign its own
-  apps. It needs a local device VPN connected, and an iOS Shortcut named `TurnOffData`
-  that iPASide cannot create for you — the app says so rather than letting you find out.
+  apps. You sign into that SideStore once, with the same Apple ID iPASide uses — iPASide
+  bakes its certificate in, so SideStore reuses that identity instead of replacing it. It
+  also needs a local device VPN connected, and an iOS Shortcut named `TurnOffData` that
+  iPASide cannot create for you — the app says all of this rather than letting you find out.
 - **See and manage your Apple ID's account.** Certificates, App IDs and devices, for any
   Apple ID you have signed in. Each certificate says which tool registered it, because
   Apple counts them per machine and revoking the wrong one breaks a different tool's apps.

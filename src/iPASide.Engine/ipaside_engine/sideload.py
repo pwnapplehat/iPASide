@@ -219,12 +219,15 @@ def _profile_post_install(name: str, udid: str, ipa_path: str) -> dict[str, Any]
         "certificate": livecontainer.seed_certificate(bundle, udid)
     }
 
-    # A pairing file is a credential for this PC's pairing with the phone, so it goes only
-    # to a build that has a store able to use it.
+    # A pairing file is a credential for this PC's pairing with the phone, and the sign-in
+    # tokens are a credential for the Apple account, so both go only to a build with a store
+    # able to use them - and both are re-delivered on every refresh, so a rotated token or a
+    # re-paired device keeps the built-in store working without the user touching it.
     if livecontainer.has_sidestore(ipa_path):
         outcome["pairing"] = livecontainer.deliver_pairing(
             bundle["bundle_id"], udid, udid
         )
+        outcome["signin"] = livecontainer.deliver_signin(bundle, udid)
     return outcome
 
 

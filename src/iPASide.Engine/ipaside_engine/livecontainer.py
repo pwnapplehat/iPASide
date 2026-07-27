@@ -37,7 +37,7 @@ from typing import Any, Callable
 
 import requests
 
-from . import apps, ipa as ipa_module, lockdown, provision, signing
+from . import apps, gsa, ipa as ipa_module, lockdown, provision, signing
 from .errors import EngineError
 
 #: LiveContainer's own identifier; the team id is appended for a free account.
@@ -77,13 +77,25 @@ PAIRING_NAME = "ALTPairingFile.mobiledevicepairing"
 #: Where usbmux keeps the pairing records this PC has for its devices.
 _LOCKDOWN_DIR = Path(r"C:\ProgramData\Apple\Lockdown")
 
-#: The SideStore bundled inside the +SideStore build, and the files it reads on first
-#: launch to import a signing certificate without the user having to sign in. Named and
+#: The SideStore bundled inside the +SideStore build, and the files it reads to reuse a
+#: signing certificate instead of minting its own. SideStore still needs a one-time Apple
+#: ID sign-in; when that sign-in uses the *same* Apple ID iPASide did, it finds this baked
+#: identity by serial and reuses it - no revoke, no extra certificate slot. Named and
 #: placed to AltStore/SideStore's own convention, the same one iLoader's isideload uses.
 SIDESTORE_FRAMEWORK = "SideStoreApp.framework"
 ALT_CERTIFICATE_FILE = "ALTCertificate.p12"
 _ALT_CERTIFICATE_ID_KEY = "ALTCertificateID"
 _ALT_APP_GROUPS_KEY = "ALTAppGroups"
+
+#: Sign-in seed for the built-in SideStore. Delivered to LiveContainer's Documents and
+#: consumed by the injected dylib, which writes the two keychain items SideStore reads on
+#: its token-auth path - so it is signed in the moment it opens, with no Apple ID prompt.
+#: Named to iPASide, not SideStore, which never writes it and only reads the keychain.
+SIGNIN_REQUEST_NAME = "iPASide-signin.plist"
+
+#: SideStore's keychain service, exactly as AltStoreCore/Keychain.swift opens it (its
+#: hardcoded bundle id). Handed to the dylib so what it writes is what SideStore reads.
+SIDESTORE_KEYCHAIN_SERVICE = "com.SideStore.SideStore"
 
 #: Release builds. The SideStore one carries a whole store inside the same bundle id, so
 #: it costs no extra app slot, and its refresh is exposed as an App Intent - meaning a
@@ -151,20 +163,25 @@ def is_livecontainer(info: dict[str, Any]) -> bool:
 def seed_sidestore_certificate(ipa_path: str, bundle: dict[str, Any], dest_dir: str) -> str:
     """Bake iPASide's certificate into the bundled SideStore, before the IPA is signed.
 
-    SideStore imports a certificate it finds in its own bundle on first launch, which is
-    how a store gets a signing identity without the user typing an Apple ID into it. iLoader
-    does the same; the convention (confirmed against isideload) is, inside
-    ``Frameworks/SideStoreApp.framework``:
+    When the user signs into SideStore, it compares the certificates Apple returns for the
+    team against an ``ALTCertificateID`` (a serial) in its bundle; on a match it decrypts a
+    bundled ``ALTCertificate.p12`` with that certificate's Apple ``machineId`` and reuses
+    the identity, instead of revoking one to mint its own. iLoader's isideload bakes it the
+    same way; the convention, inside ``Frameworks/SideStoreApp.framework``, is:
 
     * ``ALTCertificate.p12`` - the identity, encrypted with the certificate's Apple
       ``machineId`` as its password;
     * ``Info.plist`` gains ``ALTCertificateID`` (the serial) and ``ALTAppGroups`` (the
       shared app group).
 
-    Seeding it with *iPASide's own* certificate is the point: SideStore then refreshes
-    under the same identity that installed LiveContainer, so the phone can renew apps on
-    its own and there is no separate Apple ID to sign into - which is also the one way to
-    end up with a second, conflicting LiveContainer.
+    Seeding it with *iPASide's own* certificate is the point: when the user signs into
+    SideStore with the same Apple ID iPASide used, SideStore reuses iPASide's certificate
+    rather than revoking it - so the two share one identity, nothing iPASide already signed
+    is invalidated, and no extra certificate slot is spent. It does **not** remove the
+    sign-in: SideStore needs an Apple session of its own to reach Apple's developer API
+    when it refreshes. Signing into SideStore with a *different* Apple ID makes it mint its
+    own certificate on that account - which is one way to end up with a second, conflicting
+    LiveContainer.
 
     Returns the path to a new IPA, written under ``dest_dir``. Must run before signing:
     the files have to be inside the bundle when zsign builds its code-signature manifest,
@@ -579,6 +596,73 @@ def _manual_instructions(bundle: dict[str, Any]) -> str:
         f"On My iPhone \u2192 LiveContainer \u2192 {CERTIFICATE_NAME}, and enter the "
         f"password {bundle['p12_password']}."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Signing the built-in SideStore in, with no Apple ID prompt
+# --------------------------------------------------------------------------- #
+def _signin_request(bundle: dict[str, Any]) -> bytes:
+    """The plist tools/lc-cert-import/ reads to seed SideStore's sign-in tokens.
+
+    SideStore authenticates by token when its keychain already holds an ``adsid`` and the
+    ``com.apple.gs.xcode.auth`` GrandSlam token - the password-less branch of its
+    ``AuthenticationOperation.signIn``. iPASide already has both for the account that
+    signed this LiveContainer, so handing them over is what lets the built-in store open
+    already signed in and refresh with no prompt. The token itself is long-lived (Apple
+    dates it about a year out), so it outlasts every seven-day app expiry in between.
+
+    They go to every keychain group LiveContainer might place SideStore's guest in: it
+    picks one at random per container, and the dylib, running unhooked in the host, writes
+    into all of them so whichever it lands on is covered. This is exactly the
+    :func:`build_entitlements` keychain list, so the seed and the signed entitlements
+    cannot drift apart.
+    """
+    session = gsa.load_session()
+    return plistlib.dumps(
+        {
+            "AppleIDAdsid": session["adsid"],
+            "AppleIDXcodeToken": session["auth_token"],
+            "KeychainService": SIDESTORE_KEYCHAIN_SERVICE,
+            "AccessGroups": build_entitlements(bundle["team_id"], bundle["bundle_id"])[
+                "keychain-access-groups"
+            ],
+        },
+        fmt=plistlib.FMT_BINARY,
+    )
+
+
+def deliver_signin(bundle: dict[str, Any], serial: str | None = None) -> dict[str, Any]:
+    """Seed the built-in SideStore's sign-in, so it opens already signed in.
+
+    Writes the request the injected dylib consumes into LiveContainer's Documents, but only
+    when this build actually ships that dylib: with nothing to consume it, a live account
+    token would sit on the device for nothing, so the seed is skipped and SideStore's own
+    one-time sign-in is left as the way in.
+
+    Never raises. Like the pairing file, LiveContainer is already installed by the time this
+    runs, so a failure to seed is reported rather than allowed to undo the install - the
+    user can still sign into SideStore by hand.
+    """
+    if signing.resolve_helper_dylib() is None:
+        return {
+            "seeded": False,
+            "automatic": False,
+            "reason": "no import helper in this build",
+        }
+
+    try:
+        request = _signin_request(bundle)
+    except gsa.GsaError as exc:
+        return {"seeded": False, "automatic": False, "error": str(exc)}
+
+    try:
+        asyncio.run(
+            _write_documents(bundle["bundle_id"], serial, {SIGNIN_REQUEST_NAME: request})
+        )
+    except Exception as exc:  # noqa: BLE001 - any transport failure means the same thing
+        return {"seeded": False, "automatic": False, "error": str(exc)}
+
+    return {"seeded": True, "automatic": True}
 
 
 # --------------------------------------------------------------------------- #

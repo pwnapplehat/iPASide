@@ -32,6 +32,7 @@ xcrun --sdk iphoneos clang \
     -dynamiclib \
     -fobjc-arc \
     -framework Foundation \
+    -framework Security \
     -install_name "@executable_path/iPASideCertImport.dylib" \
     -Wall -Wextra -Werror \
     -O2 \
