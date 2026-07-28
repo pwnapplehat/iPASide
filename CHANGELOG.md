@@ -4,6 +4,31 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.2] - 2026-07-29
+
+### Fixed
+
+- **Signing an IPA larger than about 2 GB failed immediately with "Unzip failed!".** The
+  bundled signer (zsign) reads IPAs through a copy of minizip that, on Windows, falls back
+  to 32-bit file offsets, so it could not seek past the 2 GB mark to reach the ZIP index of
+  a large app - a 4 GB game's IPA never got past unzipping, no matter how many times you
+  tried. Both reading and writing the archive now go through the 64-bit Windows file API
+  (iowin32), and the fix is proven by signing a real 4.19 GB IPA end to end: unzip, sign all
+  53 frameworks and the app, and repack to a valid 4.19 GB output. Anything under 2 GB was
+  never affected, which is why most apps signed fine.
+
+- **Signing in could break permanently with a cryptic archive error.** iPASide sets up Apple
+  sign-in using a small set of device libraries it downloads once from a public host and
+  caches together with the provisioning state. If that download was intercepted (a proxy or
+  captive-portal page arriving in place of the archive) or the cache was left half-written by
+  an interrupted first run, every later attempt re-threw a raw "not a gzip/bzip2/xz/tar file"
+  error from deep in the archive parser - and the only way out was to find and delete the
+  cache file by hand. Now a cache that will not load is discarded and rebuilt automatically,
+  the download is verified to be a real archive before it is used (and retried if not), and a
+  genuine failure reports that the provisioning server may be down or the network is blocking
+  it, instead of a parser stack trace. The libraries are still downloaded, not bundled, so
+  nothing of Apple's is redistributed.
+
 ## [1.1.1] - 2026-07-28
 
 ### Fixed

@@ -11,4 +11,4 @@ This package is intentionally usable stand-alone as a CLI:
     python -m ipaside_engine devices
 """
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
