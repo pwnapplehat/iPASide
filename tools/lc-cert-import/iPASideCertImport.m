@@ -210,24 +210,31 @@ static BOOL iPASideKeychainSet(NSString *service, NSString *account, NSString *a
         return NO;
     }
 
-    NSDictionary *identity = @{
+    /* A nil access group means "the process default" - which is where the bundled
+     * SideStore reads, since LiveContainer does not hook its keychain (see the caller).
+     * Passing nil for kSecAttrAccessGroup is not allowed, so the key is simply omitted. */
+    NSMutableDictionary *identity = [@{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecAttrService: service,
         (__bridge id)kSecAttrAccount: account,
-        (__bridge id)kSecAttrAccessGroup: accessGroup,
         (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny,
-    };
+    } mutableCopy];
+    if (accessGroup != nil) {
+        identity[(__bridge id)kSecAttrAccessGroup] = accessGroup;
+    }
     SecItemDelete((__bridge CFDictionaryRef)identity);
 
-    NSDictionary *item = @{
+    NSMutableDictionary *item = [@{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecAttrService: service,
         (__bridge id)kSecAttrAccount: account,
-        (__bridge id)kSecAttrAccessGroup: accessGroup,
         (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlock,
         (__bridge id)kSecAttrSynchronizable: (__bridge id)kCFBooleanTrue,
         (__bridge id)kSecValueData: data,
-    };
+    } mutableCopy];
+    if (accessGroup != nil) {
+        item[(__bridge id)kSecAttrAccessGroup] = accessGroup;
+    }
     return SecItemAdd((__bridge CFDictionaryRef)item, NULL) == errSecSuccess;
 }
 
@@ -275,14 +282,24 @@ static void iPASideSeedSignIn(NSString *documents) {
         }
     }
 
-    if (stored == 0) {
-        iPASideLog(@"could not store sign-in tokens in any of %lu groups; leaving the request",
+    /* The write that actually signs the bundled SideStore in. LiveContainer skips its
+     * keychain hook for SideStore (the isSideStore guard in LCBootstrap), so SideStore is
+     * unhooked and reads the process *default* access group, not a namespaced one. This
+     * dylib is unhooked too, so a write with no access group lands in that same default
+     * group. The 128 explicit groups above are kept only as a fallback for a hooked build. */
+    BOOL defaultOk = iPASideKeychainSet(service, kSideStoreAdsidAccount, nil, adsid) &&
+                     iPASideKeychainSet(service, kSideStoreXcodeTokenAccount, nil, token);
+
+    if (stored == 0 && !defaultOk) {
+        iPASideLog(@"could not store sign-in tokens (0/%lu groups, default failed); "
+                   @"leaving the request",
                    (unsigned long)((NSArray *)groups).count);
         return;
     }
 
-    iPASideLog(@"seeded sign-in tokens into %lu of %lu keychain groups",
-               (unsigned long)stored, (unsigned long)((NSArray *)groups).count);
+    iPASideLog(@"seeded sign-in tokens: %lu of %lu groups, default group %@",
+               (unsigned long)stored, (unsigned long)((NSArray *)groups).count,
+               defaultOk ? @"ok" : @"FAILED");
 
     NSError *error = nil;
     if (![NSFileManager.defaultManager removeItemAtPath:path error:&error]) {

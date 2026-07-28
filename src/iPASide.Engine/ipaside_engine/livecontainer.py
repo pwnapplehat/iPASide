@@ -32,6 +32,7 @@ import plistlib
 import shutil
 import tempfile
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
@@ -96,6 +97,16 @@ SIGNIN_REQUEST_NAME = "iPASide-signin.plist"
 #: SideStore's keychain service, exactly as AltStoreCore/Keychain.swift opens it (its
 #: hardcoded bundle id). Handed to the dylib so what it writes is what SideStore reads.
 SIDESTORE_KEYCHAIN_SERVICE = "com.SideStore.SideStore"
+
+#: SideStore's home inside LiveContainer (LiveContainer redirects the guest's HOME here),
+#: and its standard-defaults plist under it. SideStore's AppDelegate resets the keychain -
+#: wiping the seeded tokens - the first time it launches, gated on ``firstLaunch`` being
+#: absent from these defaults. Pre-setting the key makes it skip that reset, so the seed
+#: survives. On a fresh install nothing has written this domain yet, so the value written
+#: to disk here is what it reads on that first launch.
+SIDESTORE_HOME = "/Documents/SideStore"
+_SIDESTORE_PREFS = f"{SIDESTORE_HOME}/Library/Preferences/com.SideStore.SideStore.plist"
+_FIRST_LAUNCH_KEY = "firstLaunch"
 
 #: Release builds. The SideStore one carries a whole store inside the same bundle id, so
 #: it costs no extra app slot, and its refresh is exposed as an App Intent - meaning a
@@ -656,13 +667,61 @@ def deliver_signin(bundle: dict[str, Any], serial: str | None = None) -> dict[st
         return {"seeded": False, "automatic": False, "error": str(exc)}
 
     try:
-        asyncio.run(
-            _write_documents(bundle["bundle_id"], serial, {SIGNIN_REQUEST_NAME: request})
+        suppressed = asyncio.run(
+            _seed_signin_async(bundle["bundle_id"], serial, request)
         )
     except Exception as exc:  # noqa: BLE001 - any transport failure means the same thing
         return {"seeded": False, "automatic": False, "error": str(exc)}
 
-    return {"seeded": True, "automatic": True}
+    return {"seeded": True, "automatic": True, "first_launch_suppressed": suppressed}
+
+
+async def _seed_signin_async(bundle_id: str, serial: str | None, request: bytes) -> bool:
+    """Deliver the token request and suppress the first-launch reset in one session.
+
+    Both are needed for the seed to take: the dylib imports the tokens from the request,
+    but SideStore's AppDelegate resets the keychain the first time it launches - erasing
+    them - unless ``firstLaunch`` is already set. Returns whether that key is now in place.
+    """
+    from pymobiledevice3.services.house_arrest import HouseArrestService
+
+    client = await lockdown.create(serial)
+    try:
+        async with await HouseArrestService.create(client, bundle_id) as svc:
+            await svc.makedirs("/Documents")
+            await svc.set_file_contents(f"/Documents/{SIGNIN_REQUEST_NAME}", request)
+            return await _suppress_first_launch(svc)
+    finally:
+        await lockdown.close(client)
+
+
+async def _suppress_first_launch(svc: Any) -> bool:
+    """Set SideStore's ``firstLaunch`` default so it does not reset the keychain on launch.
+
+    Merges into whatever prefs already exist and leaves an earlier date untouched, so a
+    store that really has launched keeps its own first-launch date. Any read failure just
+    means the file is not there yet, which is the fresh-install case a value is written for.
+    """
+    prefs: dict[str, Any] = {}
+    try:
+        loaded = plistlib.loads(await svc.get_file_contents(_SIDESTORE_PREFS))
+        if isinstance(loaded, dict):
+            prefs = loaded
+    except Exception:  # noqa: BLE001 - absent or unreadable both mean "write a fresh one"
+        prefs = {}
+
+    if prefs.get(_FIRST_LAUNCH_KEY) is not None:
+        return True
+
+    # Naive: plistlib's binary writer subtracts a naive epoch and rejects aware datetimes.
+    # The value only has to be non-nil for SideStore to skip the reset, so UTC-now is fine.
+    prefs[_FIRST_LAUNCH_KEY] = datetime.now(timezone.utc).replace(tzinfo=None)
+    directory = _SIDESTORE_PREFS.rsplit("/", 1)[0]
+    await svc.makedirs(directory)
+    await svc.set_file_contents(
+        _SIDESTORE_PREFS, plistlib.dumps(prefs, fmt=plistlib.FMT_BINARY)
+    )
+    return True
 
 
 # --------------------------------------------------------------------------- #

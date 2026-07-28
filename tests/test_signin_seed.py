@@ -70,11 +70,11 @@ def test_no_helper_dylib_writes_nothing(monkeypatch, signed_in):
     monkeypatch.setattr(livecontainer.signing, "resolve_helper_dylib", lambda: None)
     wrote: dict = {}
 
-    async def fake_write(*_args, **_kwargs):
+    async def fake_seed(*_args, **_kwargs):
         wrote["called"] = True
-        return []
+        return True
 
-    monkeypatch.setattr(livecontainer, "_write_documents", fake_write)
+    monkeypatch.setattr(livecontainer, "_seed_signin_async", fake_seed)
 
     result = livecontainer.deliver_signin(BUNDLE, "udid")
 
@@ -83,23 +83,26 @@ def test_no_helper_dylib_writes_nothing(monkeypatch, signed_in):
     assert "called" not in wrote, "no request may leave when nothing can consume it"
 
 
-def test_it_is_written_into_livecontainers_documents(monkeypatch, signed_in, has_helper):
+def test_it_delivers_the_request_and_reports_first_launch_suppressed(
+    monkeypatch, signed_in, has_helper
+):
     calls: dict = {}
 
-    async def fake_write(bundle_id, serial, files, *, directories=("/Documents",)):
-        calls.update(
-            bundle_id=bundle_id, serial=serial, files=files, directories=directories
-        )
-        return [f"{d}/{n}" for d in directories for n in files]
+    async def fake_seed(bundle_id, serial, request):
+        calls.update(bundle_id=bundle_id, serial=serial, request=request)
+        return True
 
-    monkeypatch.setattr(livecontainer, "_write_documents", fake_write)
+    monkeypatch.setattr(livecontainer, "_seed_signin_async", fake_seed)
 
     result = livecontainer.deliver_signin(BUNDLE, "udid")
 
-    assert result == {"seeded": True, "automatic": True}
-    assert list(calls["files"]) == [livecontainer.SIGNIN_REQUEST_NAME]
+    assert result == {
+        "seeded": True,
+        "automatic": True,
+        "first_launch_suppressed": True,
+    }
     assert calls["bundle_id"] == BUNDLE["bundle_id"]
-    payload = plistlib.loads(calls["files"][livecontainer.SIGNIN_REQUEST_NAME])
+    payload = plistlib.loads(calls["request"])
     assert payload["AppleIDXcodeToken"] == SESSION["auth_token"]
 
 
@@ -124,9 +127,73 @@ def test_a_delivery_failure_is_reported_not_raised(monkeypatch, signed_in, has_h
     async def explode(*_args, **_kwargs):
         raise OSError("device went away")
 
-    monkeypatch.setattr(livecontainer, "_write_documents", explode)
+    monkeypatch.setattr(livecontainer, "_seed_signin_async", explode)
 
     result = livecontainer.deliver_signin(BUNDLE, "udid")
 
     assert result["seeded"] is False
     assert "device went away" in result["error"]
+
+
+# --------------------------------------------------------------------------- #
+# Surviving SideStore's first-launch keychain reset
+# --------------------------------------------------------------------------- #
+class _FakeAFC:
+    """Just enough of the house_arrest surface for _suppress_first_launch."""
+
+    def __init__(self, existing: bytes | None):
+        self._existing = existing
+        self.written: dict = {}
+        self.made: list = []
+
+    async def get_file_contents(self, path):
+        if self._existing is None:
+            raise FileNotFoundError(path)
+        return self._existing
+
+    async def makedirs(self, path):
+        self.made.append(path)
+
+    async def set_file_contents(self, path, data):
+        self.written[path] = data
+
+
+def _run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def test_first_launch_is_written_when_the_prefs_are_absent():
+    """The fresh-install case: no prefs yet, so a value is written to skip the reset."""
+    afc = _FakeAFC(existing=None)
+
+    result = _run(livecontainer._suppress_first_launch(afc))
+
+    assert result is True
+    written = plistlib.loads(afc.written[livecontainer._SIDESTORE_PREFS])
+    assert written[livecontainer._FIRST_LAUNCH_KEY] is not None
+
+
+def test_an_existing_first_launch_date_is_left_untouched():
+    """A store that really has launched keeps its own first-launch date; nothing rewritten."""
+    from datetime import datetime
+
+    existing = plistlib.dumps({livecontainer._FIRST_LAUNCH_KEY: datetime(2020, 1, 1)})
+    afc = _FakeAFC(existing=existing)
+
+    result = _run(livecontainer._suppress_first_launch(afc))
+
+    assert result is True
+    assert afc.written == {}
+
+
+def test_other_prefs_are_preserved_when_setting_first_launch():
+    existing = plistlib.dumps({"someOtherKey": "keepme"})
+    afc = _FakeAFC(existing=existing)
+
+    _run(livecontainer._suppress_first_launch(afc))
+
+    written = plistlib.loads(afc.written[livecontainer._SIDESTORE_PREFS])
+    assert written["someOtherKey"] == "keepme"
+    assert written[livecontainer._FIRST_LAUNCH_KEY] is not None
