@@ -1,0 +1,46 @@
+diff --git a/src/common/archive.cpp b/src/common/archive.cpp
+index 78c49b1..35ede15 100644
+--- a/src/common/archive.cpp
++++ b/src/common/archive.cpp
+@@ -9,6 +9,9 @@
+ #else
+ #include "third-party/minizip/zip.h"
+ #include "third-party/minizip/unzip.h"
++#ifdef _WIN32
++#include "third-party/minizip/iowin32.h"
++#endif
+ #endif
+ 
+ void Zip::GetModificationTime(const char* path, void* zfi)
+@@ -91,7 +94,15 @@ bool Zip::Archive(const string& strFolder, const string& strZipFile, int nZipLev
+         return false;
+     }
+     
++#ifdef _WIN32
++    // Windows minizip defaults to 32-bit fseek (USE_FILE32API), which cannot address the
++    // central directory of a >2GB output IPA; iowin32 uses 64-bit Win32 file APIs.
++    zlib_filefunc64_def zffunc;
++    fill_win32_filefunc64A(&zffunc);
++    zipFile zf = zipOpen2_64(strZipFile.c_str(), 0, NULL, &zffunc);
++#else
+     zipFile zf = zipOpen64(strZipFile.c_str(), 0);
++#endif
+     if (!zf) {
+ 		ZLog::ErrorV(">>> Zip: Failed to create zip file: %s\n", strZipFile.c_str());
+         return false;
+@@ -128,7 +139,15 @@ bool Zip::Archive(const string& strFolder, const string& strZipFile, int nZipLev
+ 
+ bool Zip::_EnumZipItems(const char* zip_file, enum_zip_items_callback callback)
+ {
++#ifdef _WIN32
++	// See note in Zip::Archive: 32-bit fseek cannot reach the central directory of a
++	// >2GB IPA (e.g. large games), so opening it fails outright. iowin32 is 64-bit.
++	zlib_filefunc64_def uffunc;
++	fill_win32_filefunc64A(&uffunc);
++	unzFile uf = unzOpen2_64(zip_file, &uffunc);
++#else
+ 	unzFile uf = unzOpen64(zip_file);
++#endif
+ 	if (NULL == uf) {
+ 		return false;
+ 	}

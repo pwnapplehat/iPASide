@@ -1,0 +1,6 @@
+# The zsign build runs in MSYS2 bash and applies the patch with `git apply`;
+# both must stay LF regardless of the cloning machine's core.autocrlf, or the
+# build breaks on a fresh Windows clone. Scoped to these two files so nothing
+# else is renormalised.
+/tools/zsign/build-zsign.sh text eol=lf
+/tools/zsign/win-largefile.patch text eol=lf

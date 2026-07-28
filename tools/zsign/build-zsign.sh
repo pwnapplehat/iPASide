@@ -35,6 +35,14 @@ cd "$WORK"
 echo "== patching certcheck.cpp (ssize_t guard for MinGW) =="
 sed -i 's/^typedef int ssize_t;/#ifdef _MSC_VER\ntypedef int ssize_t;\n#endif/' src/certcheck.cpp
 
+# Windows minizip defaults to 32-bit fseek (USE_FILE32API in ioapi.h), so zsign cannot
+# seek to the central directory of an IPA larger than ~2GB - large games (e.g. a 4GB PUBG
+# IPA) fail immediately with "Unzip failed!". Route archive read/write through iowin32's
+# 64-bit Win32 file API instead. Fails loudly if upstream drifts, rather than silently
+# reverting to the 32-bit path.
+echo "== patching archive.cpp (64-bit file I/O for >2GB IPAs) =="
+git apply "$HERE/win-largefile.patch"
+
 echo "== compiling =="
 WIN=build/windows/vs2022/zsign/src
 OBJ=.obj
@@ -51,7 +59,7 @@ done
 
 # C++ sources. MSVC pulls in libc headers transitively; GCC needs them forced.
 for f in src/*.cpp src/common/*.cpp "$WIN/getopt.cpp" "$WIN/iconv.cpp"; do
-  g++ -std=c++11 -O3 -include cstdint -include cstring -include cstdio -include cstdlib \
+  g++ -std=c++11 -O3 -DZSIGN_VERSION=iPASide -include cstdint -include cstring -include cstdio -include cstdlib \
       -Wno-unused-result -Wno-deprecated-declarations $INC -c "$f" -o "$OBJ/$(echo "$f" | tr '/' '_').o"
 done
 
