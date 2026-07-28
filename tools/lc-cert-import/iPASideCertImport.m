@@ -204,20 +204,23 @@ static void iPASideSeedCertificate(NSString *documents) {
  * refresh replaces a rotated token rather than colliding. Returns YES on a stored item.
  */
 static BOOL iPASideKeychainSet(NSString *service, NSString *account, NSString *accessGroup,
-                               NSString *value) {
+                               BOOL synchronizable, NSString *value) {
     NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
     if (data == nil) {
         return NO;
     }
 
-    /* A nil access group means "the process default" - which is where the bundled
-     * SideStore reads, since LiveContainer does not hook its keychain (see the caller).
-     * Passing nil for kSecAttrAccessGroup is not allowed, so the key is simply omitted. */
+    id syncValue = synchronizable ? (__bridge id)kCFBooleanTrue : (__bridge id)kCFBooleanFalse;
+
+    /* Delete only the matching synchronizable variant, so writing a synchronizable and a
+     * non-synchronizable copy of the same key leaves both in place - they are distinct
+     * keychain items. A nil access group means the process default (passing nil for
+     * kSecAttrAccessGroup is not allowed, so the key is simply omitted). */
     NSMutableDictionary *identity = [@{
         (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
         (__bridge id)kSecAttrService: service,
         (__bridge id)kSecAttrAccount: account,
-        (__bridge id)kSecAttrSynchronizable: (__bridge id)kSecAttrSynchronizableAny,
+        (__bridge id)kSecAttrSynchronizable: syncValue,
     } mutableCopy];
     if (accessGroup != nil) {
         identity[(__bridge id)kSecAttrAccessGroup] = accessGroup;
@@ -229,13 +232,45 @@ static BOOL iPASideKeychainSet(NSString *service, NSString *account, NSString *a
         (__bridge id)kSecAttrService: service,
         (__bridge id)kSecAttrAccount: account,
         (__bridge id)kSecAttrAccessible: (__bridge id)kSecAttrAccessibleAfterFirstUnlock,
-        (__bridge id)kSecAttrSynchronizable: (__bridge id)kCFBooleanTrue,
+        (__bridge id)kSecAttrSynchronizable: syncValue,
         (__bridge id)kSecValueData: data,
     } mutableCopy];
     if (accessGroup != nil) {
         item[(__bridge id)kSecAttrAccessGroup] = accessGroup;
     }
     return SecItemAdd((__bridge CFDictionaryRef)item, NULL) == errSecSuccess;
+}
+
+/**
+ * Read one key back exactly the way SideStore's KeychainAccess does - service + account,
+ * no access group, returning attributes - across the three synchronizable modes, and log
+ * which access group each match lands in. This is the truest test of what SideStore's own
+ * read will see, because it runs unhooked in the same process. Values are never logged.
+ */
+static void iPASideKeychainDiagnose(NSString *service, NSString *account) {
+    CFTypeRef syncModes[3] = {kSecAttrSynchronizableAny, kCFBooleanTrue, kCFBooleanFalse};
+    const char *syncLabels[3] = {"any", "true", "false"};
+    for (int i = 0; i < 3; i++) {
+        NSDictionary *query = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: service,
+            (__bridge id)kSecAttrAccount: account,
+            (__bridge id)kSecAttrSynchronizable: (__bridge id)syncModes[i],
+            (__bridge id)kSecReturnAttributes: (__bridge id)kCFBooleanTrue,
+            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne,
+        };
+        CFTypeRef result = NULL;
+        OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        if (status == errSecSuccess && result != NULL) {
+            NSDictionary *attrs = (__bridge NSDictionary *)result;
+            iPASideLog(@"readback %@ sync=%s: FOUND in group=%@", account, syncLabels[i],
+                       attrs[(__bridge id)kSecAttrAccessGroup]);
+            CFRelease(result);
+        } else {
+            iPASideLog(@"readback %@ sync=%s: not found (status %d)", account, syncLabels[i],
+                       (int)status);
+        }
+    }
 }
 
 /**
@@ -275,8 +310,8 @@ static void iPASideSeedSignIn(NSString *documents) {
         if (![group isKindOfClass:NSString.class] || ((NSString *)group).length == 0) {
             continue;
         }
-        BOOL wroteAdsid = iPASideKeychainSet(service, kSideStoreAdsidAccount, group, adsid);
-        BOOL wroteToken = iPASideKeychainSet(service, kSideStoreXcodeTokenAccount, group, token);
+        BOOL wroteAdsid = iPASideKeychainSet(service, kSideStoreAdsidAccount, group, YES, adsid);
+        BOOL wroteToken = iPASideKeychainSet(service, kSideStoreXcodeTokenAccount, group, YES, token);
         if (wroteAdsid && wroteToken) {
             stored++;
         }
@@ -286,9 +321,14 @@ static void iPASideSeedSignIn(NSString *documents) {
      * keychain hook for SideStore (the isSideStore guard in LCBootstrap), so SideStore is
      * unhooked and reads the process *default* access group, not a namespaced one. This
      * dylib is unhooked too, so a write with no access group lands in that same default
-     * group. The 128 explicit groups above are kept only as a fallback for a hooked build. */
-    BOOL defaultOk = iPASideKeychainSet(service, kSideStoreAdsidAccount, nil, adsid) &&
-                     iPASideKeychainSet(service, kSideStoreXcodeTokenAccount, nil, token);
+     * group. Written in both synchronizable variants, since SideStore's KeychainAccess get
+     * may query either - whichever it uses, one matches. The 128 explicit groups above are
+     * a fallback for a hooked build. */
+    BOOL d1 = iPASideKeychainSet(service, kSideStoreAdsidAccount, nil, YES, adsid);
+    BOOL d2 = iPASideKeychainSet(service, kSideStoreXcodeTokenAccount, nil, YES, token);
+    BOOL d3 = iPASideKeychainSet(service, kSideStoreAdsidAccount, nil, NO, adsid);
+    BOOL d4 = iPASideKeychainSet(service, kSideStoreXcodeTokenAccount, nil, NO, token);
+    BOOL defaultOk = d1 && d2 && d3 && d4;
 
     if (stored == 0 && !defaultOk) {
         iPASideLog(@"could not store sign-in tokens (0/%lu groups, default failed); "
@@ -299,7 +339,10 @@ static void iPASideSeedSignIn(NSString *documents) {
 
     iPASideLog(@"seeded sign-in tokens: %lu of %lu groups, default group %@",
                (unsigned long)stored, (unsigned long)((NSArray *)groups).count,
-               defaultOk ? @"ok" : @"FAILED");
+               defaultOk ? @"ok" : @"partial");
+
+    /* Log exactly what SideStore's own read will see - unhooked, same process. */
+    iPASideKeychainDiagnose(service, kSideStoreAdsidAccount);
 
     NSError *error = nil;
     if (![NSFileManager.defaultManager removeItemAtPath:path error:&error]) {
