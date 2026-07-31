@@ -4,6 +4,23 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.3] - 2026-07-31
+
+### Fixed
+
+- **Signing in to an Apple ID failed on non-English Windows with a cryptic
+  ``latin-1`` error.** After the password check succeeded, the trusted-device 2FA
+  step puts anisette fields on the HTTP request. The upstream anisette package
+  fills ``X-Apple-I-TimeZone`` from the OS timezone *display name*, which on a
+  Chinese install is ``中国标准时间`` (and similarly localized on other languages).
+  HTTP headers are latin-1, so urllib3 raised
+  ``'latin-1' codec can't encode characters in position 0-5`` and sign-in never
+  reached the code prompt ([#3](https://github.com/pwnapplehat/iPASide/issues/3)).
+  Timezone and locale are now rewritten to ASCII Apple-style values (abbreviation
+  or ``GMT±HH:MM``, and an ASCII locale tag) at the single place every caller gets
+  anisette headers, so GrandSlam 2FA and developer services stay wire-safe. Nine
+  regression tests reproduce the exact encode failure and pin the sanitiser.
+
 ## [1.1.2] - 2026-07-29
 
 ### Fixed
