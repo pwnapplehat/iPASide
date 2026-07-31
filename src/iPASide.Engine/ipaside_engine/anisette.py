@@ -18,6 +18,8 @@ Apple ID information is in anisette data, and none is sent to the library host.
 from __future__ import annotations
 
 import io
+import locale
+from datetime import datetime, timedelta, timezone
 from importlib import metadata
 from typing import Any
 
@@ -104,10 +106,75 @@ def _load_provider() -> Any:
     return provider
 
 
+def _gmt_offset_label(offset: timedelta) -> str:
+    """Format a UTC offset the way Apple clients do when they have no abbreviation."""
+    total = int(offset.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    hours, rem = divmod(total, 3600)
+    minutes = rem // 60
+    return f"GMT{sign}{hours:02d}:{minutes:02d}"
+
+
+def ascii_timezone(now: datetime | None = None) -> str:
+    """Timezone label safe to put on an HTTP header.
+
+    The ``anisette`` package uses ``str(tzinfo)``, which on Windows is the *localized*
+    display name - ``India Standard Time`` in English, ``中国标准时间`` on a Chinese
+    install. HTTP headers are latin-1 (urllib3 encodes them that way), so a CJK name
+    raises ``UnicodeEncodeError`` the moment sign-in reaches the trusted-device 2FA
+    request that carries anisette as headers. Apple's own clients send an abbreviation
+    (``PDT``, ``CST``) or a ``GMT±HH:MM`` offset - both ASCII - so that is what we emit.
+    """
+    when = now if now is not None else datetime.now().astimezone()
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+
+    name = when.tzname() or ""
+    if name.isascii() and name.strip():
+        return name.strip()
+
+    offset = when.utcoffset()
+    if offset is None:
+        return "GMT"
+    return _gmt_offset_label(offset)
+
+
+def ascii_locale(preferred: str | None = None) -> str:
+    """Locale tag safe to put on an HTTP header.
+
+    Falls back to ``en_US`` when the process locale is missing or not latin-1, because a
+    localized Windows locale name can contain the same non-ASCII characters as the
+    timezone display name and would fail the same way on the wire.
+    """
+    candidate = preferred if preferred is not None else (locale.getlocale()[0] or "")
+    if candidate and candidate.isascii():
+        return candidate
+    return "en_US"
+
+
+def _wire_safe_headers(raw: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite anisette fields that must survive latin-1 HTTP header encoding.
+
+    Only ``X-Apple-I-TimeZone`` and ``X-Apple-Locale`` are known to come from the OS as
+    localized strings; every other anisette value is already ASCII (base64, UUIDs, ISO
+    timestamps). Rewriting them here - at the single place every caller goes through -
+    covers GrandSlam 2FA, developer services, and anything else that dumps anisette into
+    request headers, without each of those sites having to remember.
+    """
+    headers = dict(raw)
+    headers["X-Apple-I-TimeZone"] = ascii_timezone()
+    existing_locale = headers.get("X-Apple-Locale")
+    headers["X-Apple-Locale"] = ascii_locale(
+        existing_locale if isinstance(existing_locale, str) else None
+    )
+    return headers
+
+
 def get_headers() -> dict[str, Any]:
     """Return a fresh set of anisette headers for a GSA request."""
     provider = _load_provider()
-    return dict(provider.get_data())
+    return _wire_safe_headers(dict(provider.get_data()))
 
 
 def status() -> dict[str, Any]:
