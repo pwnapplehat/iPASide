@@ -4,6 +4,20 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.1.4] - 2026-08-01
+
+### Fixed
+
+- **On Chinese Windows, Apple ID sign-in showed the 2FA code screen but no code
+  ever arrived on the phone** ([#5](https://github.com/pwnapplehat/iPASide/issues/5)).
+  1.1.3 fixed the latin-1 crash from issue #3 by keeping ASCII timezone/locale
+  values, but Windows locale *display names* like ``Chinese (Simplified)_China``
+  are ASCII and were left unchanged. Apple's trusted-device endpoint answers
+  **HTTP 500** for that value and never pushes a code - proven live against
+  ``gsa.apple.com`` (same request with ``zh_CN`` returns 200). Locales are now
+  mapped to Apple-style tags (``zh_CN``, ``en_US``, …), and if Apple rejects the
+  2FA trigger the app reports that instead of claiming a code was sent.
+
 ## [1.1.3] - 2026-07-31
 
 ### Fixed
