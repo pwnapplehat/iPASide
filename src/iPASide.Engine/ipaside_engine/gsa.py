@@ -199,12 +199,24 @@ def _twofa_headers(adsid: str, idms_token: str, headers: dict[str, str]) -> dict
 
 
 def _trigger_trusted(adsid: str, idms_token: str, headers: dict[str, str]) -> None:
-    requests.get(
+    """Ask Apple to push a trusted-device 2FA code.
+
+    The response body is an HTML interstitial even on success, so status is the signal.
+    Ignoring a non-2xx (as we used to) is what made issue #5 look like "code was sent"
+    in the UI while Apple had actually rejected the request with HTTP 500 over a bad
+    ``X-Apple-Locale``.
+    """
+    resp = requests.get(
         _TRUSTED_TRIGGER,
         headers=_twofa_headers(adsid, idms_token, headers),
         timeout=_TIMEOUT,
         verify=tls.ca_bundle(),
     )
+    if resp.status_code != 200:
+        raise GsaError(
+            f"Apple did not send a verification code (HTTP {resp.status_code}). "
+            "Check your connection and try signing in again."
+        )
 
 
 def _submit_trusted(adsid: str, idms_token: str, code: str, headers: dict[str, str]) -> None:

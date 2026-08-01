@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import locale
+import re
 from datetime import datetime, timedelta, timezone
 from importlib import metadata
 from typing import Any
@@ -45,6 +46,47 @@ _LIBS_URLS: tuple[str, ...] = (
 #: so it fails with a clear message rather than a cryptic "not a gzip/tar file" much later.
 _ARCHIVE_MAGIC = (b"PK", b"\x1f\x8b", b"BZh", b"\xfd7zXZ")
 
+#: Apple-style locale tags look like ``zh_CN`` / ``en_US`` (SideStore sends
+#: ``Locale.current.identifier``). The anisette package uses ``locale.getlocale()``, which
+#: on Windows is a *display* name like ``Chinese (Simplified)_China`` - ASCII, so it
+#: survives latin-1 encoding, but Apple's trusted-device 2FA endpoint answers HTTP 500 for
+#: it and never pushes a code (GitHub issue #5, proven live against gsa.apple.com).
+_APPLE_LOCALE = re.compile(r"^[A-Za-z]{2,3}([_-][A-Za-z0-9]+)+$")
+
+#: Windows ``getlocale()`` display names -> the identifier Apple's clients send.
+_WINDOWS_LOCALE_TO_APPLE: dict[str, str] = {
+    "chinese (simplified)_china": "zh_CN",
+    "chinese (simplified)_singapore": "zh_SG",
+    "chinese (traditional)_taiwan": "zh_TW",
+    "chinese (traditional)_hong kong s.a.r.": "zh_HK",
+    "chinese (traditional)_hong kong sar": "zh_HK",
+    "chinese (traditional)_macao s.a.r.": "zh_MO",
+    "chinese_china": "zh_CN",
+    "chinese_taiwan": "zh_TW",
+    "english_united states": "en_US",
+    "english_united kingdom": "en_GB",
+    "english_india": "en_IN",
+    "english_australia": "en_AU",
+    "english_canada": "en_CA",
+    "japanese_japan": "ja_JP",
+    "korean_korea": "ko_KR",
+    "german_germany": "de_DE",
+    "french_france": "fr_FR",
+    "french_canada": "fr_CA",
+    "spanish_spain": "es_ES",
+    "spanish_mexico": "es_MX",
+    "portuguese_brazil": "pt_BR",
+    "portuguese_portugal": "pt_PT",
+    "russian_russia": "ru_RU",
+    "italian_italy": "it_IT",
+    "dutch_netherlands": "nl_NL",
+    "polish_poland": "pl_PL",
+    "turkish_turkey": "tr_TR",
+    "thai_thailand": "th_TH",
+    "vietnamese_vietnam": "vi_VN",
+    "arabic_saudi arabia": "ar_SA",
+    "hindi_india": "hi_IN",
+}
 
 def _download_libs() -> io.BytesIO:
     """Fetch Apple's provisioning libraries, trying each source with retries.
@@ -141,26 +183,67 @@ def ascii_timezone(now: datetime | None = None) -> str:
 
 
 def ascii_locale(preferred: str | None = None) -> str:
-    """Locale tag safe to put on an HTTP header.
+    """Locale tag Apple's GrandSlam endpoints accept on the wire.
 
-    Falls back to ``en_US`` when the process locale is missing or not latin-1, because a
-    localized Windows locale name can contain the same non-ASCII characters as the
-    timezone display name and would fail the same way on the wire.
+    Must be both latin-1-safe *and* an identifier Apple understands. Keeping a Windows
+    display name just because it is ASCII is not enough: ``Chinese (Simplified)_China``
+    encodes fine, then ``/auth/verify/trusteddevice`` returns HTTP 500 and no code is
+    pushed to the phone (issue #5, reproduced live). Map Windows names to Apple-style
+    tags (``zh_CN``), accept tags that already look like ``zh_CN`` / ``en_US``, and fall
+    back to ``en_US``.
     """
-    candidate = preferred if preferred is not None else (locale.getlocale()[0] or "")
-    if candidate and candidate.isascii():
-        return candidate
+    candidates: list[str] = []
+    if preferred:
+        candidates.append(preferred)
+    # Windows often exposes the POSIX tag here (zh_CN / en_IN) even when getlocale()
+    # returns the localized display form the anisette package copies into headers.
+    try:
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            default = locale.getdefaultlocale()[0]
+    except Exception:  # noqa: BLE001 - locale stack varies by platform
+        default = None
+    if default:
+        candidates.append(default)
+    try:
+        current = locale.getlocale()[0]
+    except Exception:  # noqa: BLE001
+        current = None
+    if current:
+        candidates.append(current)
+
+    for candidate in candidates:
+        mapped = _apple_locale_tag(candidate)
+        if mapped:
+            return mapped
     return "en_US"
 
 
-def _wire_safe_headers(raw: dict[str, Any]) -> dict[str, Any]:
-    """Rewrite anisette fields that must survive latin-1 HTTP header encoding.
+def _apple_locale_tag(value: str) -> str | None:
+    """Return an Apple-style locale tag for ``value``, or None if it cannot be mapped."""
+    if not value or not value.isascii():
+        return None
+    cleaned = value.strip().replace("-", "_")
+    if _APPLE_LOCALE.fullmatch(cleaned):
+        # Normalise script/region casing lightly: zh_cn -> zh_CN when 2-letter region.
+        parts = cleaned.split("_")
+        if len(parts) >= 2 and len(parts[1]) == 2:
+            parts[1] = parts[1].upper()
+        parts[0] = parts[0].lower()
+        return "_".join(parts)
+    return _WINDOWS_LOCALE_TO_APPLE.get(value.strip().lower())
 
-    Only ``X-Apple-I-TimeZone`` and ``X-Apple-Locale`` are known to come from the OS as
-    localized strings; every other anisette value is already ASCII (base64, UUIDs, ISO
-    timestamps). Rewriting them here - at the single place every caller goes through -
+
+def _wire_safe_headers(raw: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite anisette fields that must be both latin-1-safe and Apple-accepted.
+
+    ``X-Apple-I-TimeZone`` and ``X-Apple-Locale`` come from the OS as localized or
+    Windows-display strings. Every other anisette value is already ASCII (base64, UUIDs,
+    ISO timestamps). Rewriting them here - at the single place every caller goes through -
     covers GrandSlam 2FA, developer services, and anything else that dumps anisette into
-    request headers, without each of those sites having to remember.
+    request headers.
     """
     headers = dict(raw)
     headers["X-Apple-I-TimeZone"] = ascii_timezone()
@@ -169,7 +252,6 @@ def _wire_safe_headers(raw: dict[str, Any]) -> dict[str, Any]:
         existing_locale if isinstance(existing_locale, str) else None
     )
     return headers
-
 
 def get_headers() -> dict[str, Any]:
     """Return a fresh set of anisette headers for a GSA request."""
