@@ -58,6 +58,53 @@ abstract mixin class EngineCommandRunner {
 bool isUnsolicitedEngineEvent(Map<String, dynamic> frame) =>
     frame['type'] == 'event';
 
+/// Text shown when the serve process dies or its stdout closes mid-request.
+///
+/// The headline stays stable so existing checks still match. The exit code and
+/// the last stderr lines are what a screenshot has to carry: a native crash
+/// (anisette's emulator, for one) never becomes a JSON error frame.
+String describeEngineExit({
+  required String headline,
+  int? exitCode,
+  bool stillRunning = false,
+  List<String> stderrLines = const <String>[],
+}) {
+  final StringBuffer buffer = StringBuffer(headline);
+  if (exitCode != null) {
+    final String hex =
+        (exitCode & 0xFFFFFFFF).toRadixString(16).padLeft(8, '0').toUpperCase();
+    buffer.write(' (exit $exitCode, 0x$hex)');
+  } else if (stillRunning) {
+    buffer.write(' (output closed while the process was still running)');
+  }
+  final List<String> shown = <String>[];
+  for (final String raw in stderrLines) {
+    var line = raw.trim();
+    if (line.isEmpty) {
+      continue;
+    }
+    line = line.replaceAll(
+      RegExp('IPASIDE_APPLE_PASSWORD=\\S+'),
+      'IPASIDE_APPLE_PASSWORD=(redacted)',
+    );
+    if (line.length > 240) {
+      line = '${line.substring(0, 240)}…';
+    }
+    shown.add(line);
+  }
+  final List<String> tail =
+      shown.length > 12 ? shown.sublist(shown.length - 12) : shown;
+  if (tail.isEmpty) {
+    buffer.write(
+      '\nThe engine printed nothing before it stopped. '
+      'Sign in once more and send this whole message.',
+    );
+  } else {
+    buffer.write('\n${tail.join('\n')}');
+  }
+  return buffer.toString();
+}
+
 /// Destination for engine stderr and lifecycle diagnostics.
 typedef EngineLogSink = void Function(String message);
 
@@ -120,6 +167,8 @@ class EngineClient with EngineCommandRunner {
   _LineQueue? _stdout;
   StreamSubscription<String>? _stderr;
   bool _processExited = false;
+  int? _lastExitCode;
+  final List<String> _stderrTail = <String>[];
   int _nextId = 0;
   bool _disposed = false;
   Future<void>? _disposeTask;
@@ -199,21 +248,13 @@ class EngineClient with EngineCommandRunner {
         // Dart surfaces a write to a dead pipe as an exception here rather than
         // an I/O error frame; treat it as the engine having gone away.
         _log('request $id could not be written: $error');
-        if (_disposed) {
-          throw EngineShutdownException();
-        }
-        await _cleanup();
-        throw EngineException('engine exited unexpectedly');
+        throw await _engineGone('engine exited unexpectedly');
       }
 
       while (true) {
         final String? raw = await lines.next();
         if (raw == null) {
-          if (_disposed) {
-            throw EngineShutdownException();
-          }
-          await _cleanup();
-          throw EngineException('engine exited unexpectedly');
+          throw await _engineGone('engine exited unexpectedly');
         }
 
         final Map<String, dynamic>? frame = tryDecodeJsonObject(raw);
@@ -298,10 +339,13 @@ class EngineClient with EngineCommandRunner {
     _reaper.adopt(process.pid);
     _process = process;
     _processExited = false;
+    _lastExitCode = null;
+    _stderrTail.clear();
     _enginePid = process.pid;
     unawaited(process.exitCode.then<void>((int code) {
       if (identical(_process, process)) {
         _processExited = true;
+        _lastExitCode = code;
       }
       _log('engine pid ${process.pid} exited with code $code');
     }));
@@ -328,15 +372,108 @@ class EngineClient with EngineCommandRunner {
 
     // Drain the engine's stderr (library logging) so its pipe never blocks.
     _stderr = process.stderr
-        .transform(utf8.decoder)
+        .transform(const Utf8Decoder(allowMalformed: true))
         .transform(const LineSplitter())
         .listen(
-          (String line) => _log('[engine] $line'),
+          (String line) {
+            _rememberStderr(line);
+            _log('[engine] $line');
+          },
           onError: (Object error) => _log('[engine] stderr failed: $error'),
           cancelOnError: false,
         );
 
     await _awaitReady(lines);
+  }
+
+  void _rememberStderr(String line) {
+    _stderrTail.add(line);
+    if (_stderrTail.length > 40) {
+      _stderrTail.removeAt(0);
+    }
+  }
+
+  /// Wait briefly so a crash's stderr and exit code arrive before we report.
+  Future<int?> _awaitExitCode() async {
+    final Process? process = _process;
+    if (process == null) {
+      return _lastExitCode;
+    }
+    if (_processExited && _lastExitCode != null) {
+      return _lastExitCode;
+    }
+    try {
+      final int code = await process.exitCode.timeout(
+        const Duration(milliseconds: 500),
+      );
+      _lastExitCode = code;
+      _processExited = true;
+      return code;
+    } on TimeoutException {
+      return _lastExitCode;
+    }
+  }
+
+  void _writeFaultFile(String text) {
+    try {
+      final String? localAppData = Platform.environment['LOCALAPPDATA'];
+      final String? home = Platform.environment['HOME'];
+      final Directory dir;
+      if (localAppData != null && localAppData.isNotEmpty) {
+        dir = Directory('$localAppData${Platform.pathSeparator}iPASide');
+      } else if (home != null && home.isNotEmpty) {
+        dir = Directory(
+          '$home${Platform.pathSeparator}.local${Platform.pathSeparator}share${Platform.pathSeparator}iPASide',
+        );
+      } else {
+        return;
+      }
+      dir.createSync(recursive: true);
+      File('${dir.path}${Platform.pathSeparator}engine-fault.log')
+          .writeAsStringSync('$text\n');
+    } catch (error) {
+      _log('could not write engine-fault.log: $error');
+    }
+  }
+
+  /// The process died, or its stdout closed, during a request that is not shutdown.
+  Future<EngineException> _engineGone(String headline) async {
+    if (_disposed) {
+      return EngineShutdownException();
+    }
+    final int? code = await _awaitExitCode();
+    // Stderr is delivered on the event queue; one turn lets a fault dump land.
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    if (_disposed) {
+      return EngineShutdownException();
+    }
+    final bool stillRunning =
+        code == null && _process != null && !_processExited;
+    final String message = describeEngineExit(
+      headline: headline,
+      exitCode: code ?? _lastExitCode,
+      stillRunning: stillRunning,
+      stderrLines: List<String>.from(_stderrTail),
+    );
+    _writeFaultFile(message);
+    final String saved = _faultLogPath();
+    final String shown = saved.isEmpty
+        ? message
+        : '$message\nA copy was saved to $saved';
+    await _cleanup();
+    return EngineException(shown);
+  }
+
+  String _faultLogPath() {
+    final String? localAppData = Platform.environment['LOCALAPPDATA'];
+    if (localAppData != null && localAppData.isNotEmpty) {
+      return '$localAppData${Platform.pathSeparator}iPASide${Platform.pathSeparator}engine-fault.log';
+    }
+    final String? home = Platform.environment['HOME'];
+    if (home != null && home.isNotEmpty) {
+      return '$home${Platform.pathSeparator}.local${Platform.pathSeparator}share${Platform.pathSeparator}iPASide${Platform.pathSeparator}engine-fault.log';
+    }
+    return '';
   }
 
   void _dispatchEvent(Map<String, dynamic> frame) {
@@ -366,8 +503,7 @@ class EngineClient with EngineCommandRunner {
       }
 
       if (raw == null) {
-        await _cleanup();
-        throw EngineException('engine exited during startup');
+        throw await _engineGone('engine exited during startup');
       }
 
       final Map<String, dynamic>? frame = tryDecodeJsonObject(raw);

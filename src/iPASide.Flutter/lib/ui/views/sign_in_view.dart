@@ -209,7 +209,7 @@ class _FormMessage extends StatelessWidget {
           const SizedBox(width: Space.s2),
         ],
         Expanded(
-          child: Text(
+          child: SelectableText(
             vm.message,
             style: context.t.body.copyWith(color: color),
           ),

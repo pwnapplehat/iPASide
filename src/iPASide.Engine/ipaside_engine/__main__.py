@@ -57,6 +57,21 @@ SIDESTORE_SHORTCUT_NOTE = (
 )
 
 
+def _enable_fault_handler() -> None:
+    """Dump every thread to stderr if a native library aborts the process.
+
+    Anisette drives the Unicorn emulator. A segfault or a Windows fail-fast
+    there is not a Python exception, so the serve loop cannot turn it into a
+    result frame. The desktop app keeps stderr and shows the last lines.
+    """
+    import faulthandler
+
+    try:
+        faulthandler.enable(file=sys.stderr, all_threads=True)
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        return
+
+
 def _force_utf8() -> None:
     """Force UTF-8 stdout/stderr.
 
@@ -1703,6 +1718,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
+    _enable_fault_handler()
     args = build_parser().parse_args(argv)
     try:
         return dispatch(args)

@@ -6,6 +6,10 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- When the engine process dies during sign-in, the red message includes the process exit code and the last lines it printed, and the same text is written to `%LOCALAPPDATA%\iPASide\engine-fault.log`. A native crash also dumps a traceback before the process exits.
+
 ## [1.2.6] - 2026-09-18
 
 ### Fixed

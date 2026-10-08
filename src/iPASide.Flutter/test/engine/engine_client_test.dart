@@ -180,4 +180,43 @@ void main() {
       expect(client.enginePid, isNull);
     });
   });
+
+  group('describeEngineExit', () {
+    test('keeps the headline and adds the exit code', () {
+      expect(
+        describeEngineExit(headline: 'engine exited unexpectedly', exitCode: 1),
+        'engine exited unexpectedly (exit 1, 0x00000001)\n'
+        'The engine printed nothing before it stopped. '
+        'Sign in once more and send this whole message.',
+      );
+    });
+
+    test('formats a Windows fail-fast code and keeps the last stderr lines', () {
+      final String text = describeEngineExit(
+        headline: 'engine exited unexpectedly',
+        exitCode: -1073740791,
+        stderrLines: <String>[
+          'IPASIDE_APPLE_PASSWORD=secret',
+          'Fatal Python error: Windows fatal exception: code 0xc0000409',
+        ],
+      );
+
+      expect(text, contains('0xC0000409'));
+      expect(text, contains('IPASIDE_APPLE_PASSWORD=(redacted)'));
+      expect(text, isNot(contains('secret')));
+      expect(text, contains('Windows fatal exception'));
+    });
+
+    test('says when the pipe closed but the process had not exited', () {
+      expect(
+        describeEngineExit(
+          headline: 'engine exited unexpectedly',
+          stillRunning: true,
+          stderrLines: <String>['  boom  '],
+        ),
+        'engine exited unexpectedly (output closed while the process was still running)\n'
+        'boom',
+      );
+    });
+  });
 }

@@ -187,6 +187,15 @@ def test_cli_keeps_the_traceback_for_a_bug(monkeypatch):
         main(["device-info"])
 
 
+def test_fault_handler_arms_stderr():
+    import faulthandler
+
+    from ipaside_engine.__main__ import _enable_fault_handler
+
+    _enable_fault_handler()
+    assert faulthandler.is_enabled()
+
+
 def _raise(error):
     def fail(*_args, **_kwargs):
         raise error
