@@ -6,6 +6,24 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-10-14
+
+### Fixed
+
+- **Sign-in no longer ends with a bare "engine exited unexpectedly" when Windows kills
+  Apple's device-provisioning emulator** (issue #8). The emulator is native code that
+  JIT-compiles into memory, so Windows Exploit protection (Control Flow Guard, hardware
+  shadow stacks, dynamic-code blocking) or a security product that enforces the same can
+  terminate it with no traceback. It now runs in its own helper process, so that ends one
+  sign-in attempt instead of the engine. The red message names the helper's exit code
+  (for example `0xC0000409`), quotes what it last printed, and says which Exploit
+  protection settings to switch off for `engine\python\python.exe`. Reproduced locally by
+  starting the helper under each mitigation; the engine survives, reports the cause, and
+  the next sign-in starts a fresh helper.
+- With the emulator out of the engine process, the engine's crash handler stays quiet on a
+  sign-in that works. Unicorn handles a few access violations itself, and the handler had
+  been printing each one as a "Windows fatal exception" traceback.
+
 ### Changed
 
 - When the engine process dies during sign-in, the red message includes the process exit code and the last lines it printed, and the same text is written to `%LOCALAPPDATA%\iPASide\engine-fault.log`. A native crash also dumps a traceback before the process exits.

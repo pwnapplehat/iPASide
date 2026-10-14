@@ -205,7 +205,9 @@ def test_get_headers_returns_latin1_safe_values(monkeypatch: pytest.MonkeyPatch)
                 "X-Apple-I-MD": "AAAABQ==",
             }
 
-    monkeypatch.setattr(anisette, "_load_provider", lambda: FakeProvider())
+    # Where the raw headers come from (a helper process since 1.2.7) is not what this
+    # test is about; it pins what get_headers does to whatever the provider emits.
+    monkeypatch.setattr(anisette, "_raw_headers", lambda: dict(FakeProvider().get_data()))
     monkeypatch.setattr(
         anisette,
         "ascii_timezone",

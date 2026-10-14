@@ -3,7 +3,10 @@
 Anisette headers are the device-provisioning data Apple's GrandSlam (GSA) servers
 require to authenticate an Apple ID from a non-Apple machine. iPASide generates them
 fully in-process using the pure-Python ``anisette`` package, which runs Apple's own
-portable provisioning libraries.
+portable provisioning libraries. The emulator runs in a small helper process of its
+own (``anisette_worker``), not inside the engine: it is native code that Windows exploit
+mitigations can kill outright, and that must end one sign-in attempt with an
+explanation, not the engine.
 
 Those libraries (about 2 MB, arm64, which the provider emulates regardless of host CPU)
 are fetched once from a public host and then cached with the provisioning state in a
@@ -17,9 +20,17 @@ Apple ID information is in anisette data, and none is sent to the library host.
 
 from __future__ import annotations
 
+import atexit
 import io
+import json
 import locale
+import os
+import queue
 import re
+import subprocess
+import sys
+import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from importlib import metadata
 from typing import Any
@@ -253,10 +264,243 @@ def _wire_safe_headers(raw: dict[str, Any]) -> dict[str, Any]:
     )
     return headers
 
+#: Set to ``1`` to run the emulator inside this process, as iPASide did before 1.2.7.
+#: Only for debugging: a native crash then takes the whole engine down with it.
+_INPROCESS_ENV = "IPASIDE_ANISETTE_INPROCESS"
+
+#: Longest one request may take. A first provision downloads the libraries (three tries
+#: of up to 30 s) and then emulates the provisioning handshake, so this is deliberately
+#: far above the few seconds it normally needs.
+_REQUEST_TIMEOUT = 300.0
+
+#: How many of the worker's last stderr lines are kept for the error message.
+_STDERR_KEEP = 40
+
+#: Windows exit codes (NTSTATUS) a mitigation or a native fault produces, in the words a
+#: user can act on. Matched on the unsigned value Popen reports.
+_NATIVE_EXIT_NAMES: dict[int, str] = {
+    0xC0000005: "access violation",
+    0xC000001D: "illegal instruction",
+    0xC0000409: "security check failure (fail-fast)",
+    0xC00000FF: "bad function table (stack unwind rejected)",
+    0xC000070A: "user shadow-stack violation",
+    0xC0000374: "heap corruption detected",
+    0xC0000142: "DLL initialization failed",
+}
+
+
+def _describe_worker_exit(code: int | None, stderr_tail: list[str]) -> str:
+    """Explain why the provisioning helper ended without answering.
+
+    Names the exit code and quotes what it last printed, then says what usually causes
+    this on Windows. Worded as a likely cause, not a certainty: the exit code alone
+    cannot tell a user's Exploit-protection setting from a security product that
+    enforces the same thing.
+    """
+    unsigned = None if code is None else code & 0xFFFFFFFF
+    shown = "unknown" if unsigned is None else f"0x{unsigned:08X}"
+    name = _NATIVE_EXIT_NAMES.get(unsigned) if unsigned is not None else None
+    if name:
+        shown += f" ({name})"
+
+    tail_text = "\n".join(line for line in stderr_tail if line.strip())
+    blocked_code = "dynamic translator buffer" in tail_text
+    cause = (
+        "Windows or a security product refused to let it allocate executable memory "
+        "(Exploit protection: 'Disable dynamic code' / ACG)."
+        if blocked_code
+        else "This is what happens when Windows Exploit protection or a security product "
+        "enforces Control Flow Guard, hardware-enforced stack protection or dynamic-code "
+        "blocking on this program."
+    )
+    message = (
+        f"Apple's device-provisioning step could not run: its helper process ended "
+        f"with exit code {shown} before it produced an answer. Your Apple ID and "
+        f"password were not the problem and were not sent.\n\n{cause}\n\n"
+        f"To allow it: Windows Security > App & browser control > Exploit protection > "
+        f"Program settings > add this program, and switch the mitigations above to Off:\n"
+        f"  {sys.executable}\n"
+        f"If you use another security product, allow that program there too."
+    )
+    if tail_text:
+        message += "\n\nLast output from the helper:\n" + tail_text
+    return message
+
+
+def _worker_command() -> list[str]:
+    """The interpreter command that starts the provisioning helper.
+
+    Mirrors how this process was started: the shipped engine runs with ``-E`` so a
+    stray PYTHONPATH cannot shadow its bundled packages, and the helper must too.
+    """
+    command = [sys.executable]
+    if sys.flags.ignore_environment:
+        command.append("-E")
+    if sys.flags.utf8_mode:
+        command += ["-X", "utf8"]
+    command += ["-m", "ipaside_engine.anisette_worker"]
+    return command
+
+
+def _worker_env() -> dict[str, str]:
+    """This process's environment, minus anything per-request such as the password.
+
+    The serve loop puts ``IPASIDE_APPLE_PASSWORD`` into ``os.environ`` for the length of
+    a login. The helper never needs it, so it is not handed to it.
+    """
+    return {key: value for key, value in os.environ.items() if not key.startswith("IPASIDE_")}
+
+
+class _AnisetteWorker:
+    """One running provisioning helper and the pipes to it."""
+
+    def __init__(self, command: list[str]) -> None:
+        self._replies: queue.Queue[str | None] = queue.Queue()
+        self._stderr_tail: deque[str] = deque(maxlen=_STDERR_KEEP)
+        self._proc = subprocess.Popen(  # noqa: S603 - fixed command built above
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+            env=_worker_env(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        self._pumps = [
+            threading.Thread(target=self._pump_stdout, daemon=True, name="anisette-out"),
+            threading.Thread(target=self._pump_stderr, daemon=True, name="anisette-err"),
+        ]
+        for pump in self._pumps:
+            pump.start()
+
+    def _pump_stdout(self) -> None:
+        assert self._proc.stdout is not None
+        try:
+            for line in self._proc.stdout:
+                self._replies.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._replies.put(None)
+
+    def _pump_stderr(self) -> None:
+        assert self._proc.stderr is not None
+        try:
+            for line in self._proc.stderr:
+                self._stderr_tail.append(line.rstrip())
+        except (OSError, ValueError):
+            pass
+
+    def alive(self) -> bool:
+        return self._proc.poll() is None
+
+    def headers(self, timeout: float = _REQUEST_TIMEOUT) -> dict[str, Any]:
+        """Ask the helper for one set of raw headers; raise AnisetteError if it cannot."""
+        assert self._proc.stdin is not None
+        try:
+            self._proc.stdin.write(json.dumps({"op": "headers"}) + "\n")
+            self._proc.stdin.flush()
+        except (OSError, ValueError):
+            raise AnisetteError(self._death_message()) from None
+
+        while True:
+            try:
+                line = self._replies.get(timeout=timeout)
+            except queue.Empty:
+                self.close()
+                raise AnisetteError(
+                    "Apple's device-provisioning helper did not answer within "
+                    f"{int(timeout)} seconds. Check your connection and try again."
+                ) from None
+            if line is None:
+                raise AnisetteError(self._death_message())
+            try:
+                frame = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(frame, dict) or "ok" not in frame:
+                continue  # the {"ready": true} greeting
+            if frame["ok"]:
+                headers = frame.get("headers")
+                if not isinstance(headers, dict):
+                    raise AnisetteError("the provisioning helper returned no headers")
+                return headers
+            raise AnisetteError(str(frame.get("error") or "provisioning failed"))
+
+    def _death_message(self) -> str:
+        try:
+            code: int | None = self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            code = None
+        for pump in self._pumps:
+            pump.join(timeout=2)  # let the last stderr lines land before quoting them
+        return _describe_worker_exit(code, list(self._stderr_tail))
+
+    def close(self) -> None:
+        proc = self._proc
+        try:
+            if proc.poll() is None and proc.stdin is not None:
+                proc.stdin.write(json.dumps({"op": "shutdown"}) + "\n")
+                proc.stdin.flush()
+                proc.stdin.close()
+                proc.wait(timeout=3)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+_worker: _AnisetteWorker | None = None
+_worker_lock = threading.Lock()
+
+
+def _close_worker() -> None:
+    global _worker
+    with _worker_lock:
+        if _worker is not None:
+            _worker.close()
+            _worker = None
+
+
+atexit.register(_close_worker)
+
+
+def _raw_headers() -> dict[str, Any]:
+    """Unsanitised anisette headers from the isolated helper (or in-process, if asked)."""
+    # A frozen engine executable has no interpreter to start ``-m`` on, so it keeps the
+    # old in-process behaviour. The shipped engine is a portable CPython, never frozen.
+    if os.environ.get(_INPROCESS_ENV) == "1" or getattr(sys, "frozen", False):
+        return dict(_load_provider().get_data())
+
+    global _worker
+    with _worker_lock:
+        if _worker is not None and not _worker.alive():
+            _worker.close()  # it died while idle; the next start is a clean one
+            _worker = None
+        if _worker is None:
+            try:
+                _worker = _AnisetteWorker(_worker_command())
+            except OSError as exc:
+                raise AnisetteError(
+                    f"Could not start Apple's device-provisioning helper ({exc}). "
+                    "Security software may be blocking iPASide's engine from starting "
+                    "a second process."
+                ) from exc
+        worker = _worker
+        try:
+            return worker.headers()
+        except AnisetteError:
+            # Whatever went wrong, do not reuse a helper in an unknown state.
+            worker.close()
+            _worker = None
+            raise
+
+
 def get_headers() -> dict[str, Any]:
     """Return a fresh set of anisette headers for a GSA request."""
-    provider = _load_provider()
-    return _wire_safe_headers(dict(provider.get_data()))
+    return _wire_safe_headers(_raw_headers())
 
 
 def status() -> dict[str, Any]:

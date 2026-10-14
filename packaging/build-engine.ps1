@@ -152,6 +152,7 @@ Write-Host "== Smoke test =="
 # would fail builds for reasons that have nothing to do with the payload.
 $surface = @(
     "ipaside_engine.__main__"
+    "ipaside_engine.anisette_worker"
     "pymobiledevice3.utils"
     "pymobiledevice3.usbmux"
     "pymobiledevice3.lockdown"
