@@ -18,7 +18,9 @@ HTML 503. Sign-in is three requests on that host (SRP ``init``, SRP
 fails before 2FA can complete. That is GitHub issue #7 / AltStore #1782. A
 retry on the spent socket still 503s; a new session does not. Client token:
 the same endpoint drops the request at the edge when ``X-MMe-Client-Info``
-contains ``com.apple.dt.Xcode`` (AltStore #1790). Anisette still reports
+contains ``com.apple.dt.Xcode`` (AltStore #1790). Separately, since 2026-10-12 it answers a
+Mac identity with ``-80045`` at SRP init; :data:`ipaside_engine.anisette.CLIENT_INFO` is what
+anisette headers now carry (see there). Anisette still reports
 ``Xcode/3594.4.19``; bumping the version still 503s. ``com.apple.akd/1.0``
 reaches the service. Isolation does not pass the client-token block; swapping
 the Xcode version does not pass the keep-alive block. Both are required.
@@ -38,6 +40,7 @@ import json
 import plistlib
 import re
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Any
 
 import requests
@@ -69,6 +72,16 @@ _TIMEOUT = 30
 # Version does not matter; the substring ``com.apple.dt.Xcode`` is enough.
 _BLOCKED_GSA_CLIENT_TOKEN = re.compile(r"com\.apple\.dt\.Xcode/[^)\s>]+")
 _GSA_CLIENT_TOKEN = "com.apple.akd/1.0"
+
+#: How the SRP ``complete`` reply says a second factor is needed. Until 2026-10 that was
+#: ``Status.au`` (``trustedDeviceSecondaryAuth`` or ``secondaryAuth``). Apple now also pushes the
+#: code to the person's devices during ``complete`` itself and flags it with ``Status.hsc == 409``
+#: and no ``au``. Treating that as "no second factor" went straight on to ``apptokens``, which
+#: Apple refuses with ``-22411`` / ``hsc 401``.
+_HSC_CODE_ALREADY_SENT = 409
+SECONDARY_CODE_ALREADY_SENT = "codeAlreadySent"
+#: ``au == "repair"`` means the account has no second factor set up; it is not a challenge.
+_AU_NO_SECOND_FACTOR = "repair"
 
 _PLIST_PROLOG = (
     b'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -119,6 +132,51 @@ def _gsa_client_info(value: str) -> str:
 def _html_error_page(content: bytes) -> bool:
     snippet = content.lstrip()[:64].lower()
     return snippet.startswith(b"<html") or snippet.startswith(b"<!doctype")
+
+
+_TRACE_FILE = "gsa-trace.log"
+_TRACE_MAX_BYTES = 200_000
+_TRACE_STATUS_KEYS = ("ec", "em", "hsc", "au")
+
+
+def _trace(label: str, response: requests.Response) -> None:
+    """Append one line about a GrandSlam exchange to ``gsa-trace.log`` in the data folder.
+
+    Apple changes what sign-in answers often, and a failure report is far more useful with the
+    step, HTTP status and Apple's own error code than with a bare message. Only those are written:
+    never a request, a response body, a password or a token. Failures to write are ignored.
+    """
+    try:
+        parts = [
+            datetime.now().isoformat(timespec="seconds"),
+            label,
+            f"http={response.status_code}",
+        ]
+        content = response.content
+        if _html_error_page(content):
+            parts.append("html")
+        else:
+            try:
+                parsed = _loads_plist(content)
+            except Exception:  # noqa: BLE001 - not every endpoint answers with a plist
+                parsed = None
+            if isinstance(parsed, dict):
+                body = parsed.get("Response", parsed)
+                if isinstance(body, dict):
+                    status = body.get("Status", body)
+                    if isinstance(status, dict):
+                        for key in _TRACE_STATUS_KEYS:
+                            if key in status:
+                                parts.append(f"{key}={status[key]!r}")
+                    parts.append("keys=" + ",".join(sorted(str(k) for k in body)))
+        path = paths.data_dir() / _TRACE_FILE
+        if path.exists() and path.stat().st_size > _TRACE_MAX_BYTES:
+            tail = path.read_bytes()[-_TRACE_MAX_BYTES // 2 :]
+            path.write_bytes(tail[tail.find(b"\n") + 1 :])
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(" ".join(parts) + "\n")
+    except Exception:  # noqa: BLE001 - diagnostics must never break sign-in
+        return
 
 
 def _gsa_spent_connection(response: requests.Response) -> bool:
@@ -241,6 +299,7 @@ def _gs_request(params: dict[str, Any], headers: dict[str, str]) -> dict[str, An
         headers=req_headers,
         data=plistlib.dumps(body),
     )
+    _trace(f"GsService2/{params.get('o', '?')}", resp)
     return _parse_gs_response(resp)
 
 
@@ -284,6 +343,22 @@ def _decrypt_spd(session_key: bytes, data: bytes) -> dict[str, Any]:
     return _loads_plist(raw)
 
 
+def _secondary_auth(status: dict[str, Any]) -> str | None:
+    """The second factor a ``complete`` reply asks for, or None when the sign-in is done.
+
+    Returns Apple's ``au`` value, or :data:`SECONDARY_CODE_ALREADY_SENT` when Apple has already
+    pushed a trusted-device code (``hsc 409``) without naming one.
+    """
+    au = status.get("au")
+    if au == _AU_NO_SECOND_FACTOR:
+        return None
+    if au:
+        return au
+    if status.get("hsc") == _HSC_CODE_ALREADY_SENT:
+        return SECONDARY_CODE_ALREADY_SENT
+    return None
+
+
 def _authenticate_once(
     email: str, password: str, headers: dict[str, str]
 ) -> tuple[dict[str, Any], str | None]:
@@ -316,7 +391,7 @@ def _authenticate_once(
         raise GsaError("server session verification failed (possible MITM)")
 
     spd = _decrypt_spd(usr.get_session_key(), complete["spd"])
-    secondary = complete.get("Status", {}).get("au")
+    secondary = _secondary_auth(complete.get("Status", {}))
     return spd, secondary
 
 
@@ -357,6 +432,7 @@ def _trigger_trusted(adsid: str, idms_token: str, headers: dict[str, str]) -> No
         _TRUSTED_TRIGGER,
         headers=_twofa_headers(adsid, idms_token, headers),
     )
+    _trace("trusteddevice/trigger", resp)
     if resp.status_code != 200:
         raise GsaError(
             f"Apple did not send a verification code (HTTP {resp.status_code}). "
@@ -368,6 +444,7 @@ def _submit_trusted(adsid: str, idms_token: str, code: str, headers: dict[str, s
     req_headers = _twofa_headers(adsid, idms_token, headers)
     req_headers["security-code"] = code
     resp = _gsa_http("GET", _VALIDATE, headers=req_headers)
+    _trace("trusteddevice/validate", resp)
     _raise_for_gsa_http(resp)
     _check(_parse_gsa_plist(resp.content))
 
@@ -416,6 +493,7 @@ def _trigger_sms(adsid: str, idms_token: str, headers: dict[str, str]) -> None:
         headers=_sms_headers(adsid, idms_token, headers),
         data=_sms_body(),
     )
+    _trace("sms/trigger", resp)
     if _gsa_spent_connection(resp):
         _raise_for_gsa_http(resp)
     if resp.status_code in (200, 201, 202, 423):
@@ -458,6 +536,7 @@ def _submit_sms(adsid: str, idms_token: str, code: str, headers: dict[str, str])
         headers=_sms_headers(adsid, idms_token, headers),
         data=_sms_body(code),
     )
+    _trace("sms/submit", resp)
     if _gsa_spent_connection(resp):
         _raise_for_gsa_http(resp)
     if resp.status_code == 200:
@@ -774,11 +853,15 @@ def begin_login(email: str, password: str) -> dict[str, Any]:
         return _finalize_session(email, spd, headers)
 
     adsid, idms = spd["adsid"], spd["GsIdmsToken"]
-    method = "trusteddevice" if secondary == "trustedDeviceSecondaryAuth" else "sms"
-    if method == "trusteddevice":
-        _trigger_trusted(adsid, idms, anisette.get_headers())
+    if secondary == SECONDARY_CODE_ALREADY_SENT:
+        # Apple pushed the code during the sign-in itself, so there is nothing to trigger.
+        method = "trusteddevice"
     else:
-        _trigger_sms(adsid, idms, anisette.get_headers())
+        method = "trusteddevice" if secondary == "trustedDeviceSecondaryAuth" else "sms"
+        if method == "trusteddevice":
+            _trigger_trusted(adsid, idms, anisette.get_headers())
+        else:
+            _trigger_sms(adsid, idms, anisette.get_headers())
     _save_pending(email, adsid, idms, method)
     return {"status": "2fa_required", "method": method}
 
@@ -795,6 +878,11 @@ def complete_2fa(email: str, password: str, code: str) -> dict[str, Any]:
 
     headers = anisette.get_headers()
     spd, secondary = _authenticate_once(email, password, headers)
+    if secondary == SECONDARY_CODE_ALREADY_SENT:
+        raise GsaError(
+            "Apple still wants a verification code. The code may have expired or been "
+            "mistyped; sign in again to get a new one."
+        )
     if secondary:
         raise GsaError(f"account still requires secondary auth after 2FA: {secondary}")
     return _finalize_session(email, spd, headers)

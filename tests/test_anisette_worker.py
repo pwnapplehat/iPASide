@@ -345,3 +345,27 @@ def test_real_helper_exits_when_the_engine_goes_away() -> None:
     proc.stdout.close()
     assert proc.stderr is not None
     proc.stderr.close()
+
+
+def test_a_python_error_in_the_helper_is_not_blamed_on_windows() -> None:
+    """A missing module is a software fault; sending people to Exploit protection would be wrong."""
+    message = anisette._describe_worker_exit(
+        1, ["python.exe: Error while finding module specification (ModuleNotFoundError: No module named 'x')"]
+    )
+    assert "software error" in message
+    assert "not a Windows setting" in message
+    assert "Exploit protection" not in message
+    assert "ModuleNotFoundError" in message  # what it printed is still quoted
+    assert "were not the problem" in message
+
+
+def test_a_traceback_in_the_helper_is_a_software_fault() -> None:
+    message = anisette._describe_worker_exit(1, ["Traceback (most recent call last):", "  File x", "KeyError: 'y'"])
+    assert "software error" in message
+    assert "Exploit protection" not in message
+
+
+def test_a_silent_native_death_still_points_at_windows_protections() -> None:
+    message = anisette._describe_worker_exit(0xC0000409, [])
+    assert "Exploit protection" in message
+    assert "software error" not in message

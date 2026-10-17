@@ -64,6 +64,20 @@ _ARCHIVE_MAGIC = (b"PK", b"\x1f\x8b", b"BZh", b"\xfd7zXZ")
 #: it and never pushes a code (GitHub issue #5, proven live against gsa.apple.com).
 _APPLE_LOCALE = re.compile(r"^[A-Za-z]{2,3}([_-][A-Za-z0-9]+)+$")
 
+#: The device identity sent to Apple (``X-MMe-Client-Info``) on every request.
+#:
+#: The anisette package reports a Mac with Xcode. Since 2026-10-12 Apple's sign-in server answers
+#: that with ``-80045 "This action cannot be completed at this time."`` at the very first SRP
+#: request, for any account and any network, which broke AltStore, SideStore, iloader and every
+#: other tool that gets its anisette data the same way. Checked live against gsa.apple.com on
+#: 2026-10-17 with a nonexistent Apple ID (so no real account is involved): the Mac identity still
+#: gets ``-80045``, an Android identity is dropped with HTTP 503, and a Windows identity is accepted
+#: (Apple then answers ``-20970``, the ordinary "account information was entered incorrectly").
+#: One identity is used for every host (sign-in, two-factor, developer services), the way iloader's
+#: sideloading library does it, so the tokens Apple issues and the services that read them agree.
+#: Apple has changed this rule repeatedly; if sign-in starts failing again, look here first.
+CLIENT_INFO = "<PC> <Windows;6.2(0,0);9200> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+
 #: Windows ``getlocale()`` display names -> the identifier Apple's clients send.
 _WINDOWS_LOCALE_TO_APPLE: dict[str, str] = {
     "chinese (simplified)_china": "zh_CN",
@@ -250,13 +264,14 @@ def _apple_locale_tag(value: str) -> str | None:
 def _wire_safe_headers(raw: dict[str, Any]) -> dict[str, Any]:
     """Rewrite anisette fields that must be both latin-1-safe and Apple-accepted.
 
-    ``X-Apple-I-TimeZone`` and ``X-Apple-Locale`` come from the OS as localized or
-    Windows-display strings. Every other anisette value is already ASCII (base64, UUIDs,
+    ``X-MMe-Client-Info`` is replaced by :data:`CLIENT_INFO`; ``X-Apple-I-TimeZone`` and
+    ``X-Apple-Locale`` come from the OS as localized or Windows-display strings. Every other anisette value is already ASCII (base64, UUIDs,
     ISO timestamps). Rewriting them here - at the single place every caller goes through -
     covers GrandSlam 2FA, developer services, and anything else that dumps anisette into
     request headers.
     """
     headers = dict(raw)
+    headers["X-MMe-Client-Info"] = CLIENT_INFO
     headers["X-Apple-I-TimeZone"] = ascii_timezone()
     existing_locale = headers.get("X-Apple-Locale")
     headers["X-Apple-Locale"] = ascii_locale(
@@ -305,6 +320,21 @@ def _describe_worker_exit(code: int | None, stderr_tail: list[str]) -> str:
 
     tail_text = "\n".join(line for line in stderr_tail if line.strip())
     blocked_code = "dynamic translator buffer" in tail_text
+    # A Python error (a missing module, a failed import) is a software fault, not a Windows
+    # setting; saying otherwise sends people to switch off protections that were never the cause.
+    software_fault = any(
+        marker in tail_text
+        for marker in ("Traceback (most recent call last)", "ModuleNotFoundError", "ImportError",
+                       "Error while finding module")
+    )
+    if software_fault:
+        return (
+            f"Apple's device-provisioning step could not start: its helper process ended with "
+            f"exit code {shown} because of a software error, not a Windows setting. Your Apple ID "
+            f"and password were not the problem and were not sent. Reinstalling iPASide usually "
+            f"fixes a damaged install; please report this if it keeps happening.\n\n"
+            f"Last output from the helper:\n{tail_text}"
+        )
     cause = (
         "Windows or a security product refused to let it allocate executable memory "
         "(Exploit protection: 'Disable dynamic code' / ACG)."

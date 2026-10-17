@@ -23,7 +23,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from ipaside_engine import anisette, gsa
+from ipaside_engine import anisette, developer, gsa
 
 
 # The exact timezone display name Chinese Windows returns for China Standard Time.
@@ -232,3 +232,61 @@ def test_chinese_windows_locale_maps_away_from_apple_rejected_value() -> None:
     safe = anisette._wire_safe_headers(raw)
     assert safe["X-Apple-Locale"] == "zh_CN"
     assert safe["X-Apple-Locale"] != "Chinese (Simplified)_China"
+
+
+# --------------------------------------------------------------------------- #
+# Client identity (Apple -80045, 2026-10-12)
+# --------------------------------------------------------------------------- #
+
+_MAC_WITH_XCODE = (
+    "<MacBookPro13,2> <macOS;13.1;22C65> "
+    "<com.apple.AuthKit/1 (com.apple.dt.Xcode/3594.4.19)>"
+)
+
+
+def test_client_identity_is_the_windows_one_apple_accepts() -> None:
+    """Apple answers the Mac identity with -80045 at SRP init, for any account.
+
+    Checked live on 2026-10-17 with a nonexistent Apple ID: Mac -> -80045, Android -> HTTP 503,
+    Windows -> accepted (-20970). The anisette package reports a Mac, so it is replaced.
+    """
+    safe = anisette._wire_safe_headers({"X-MMe-Client-Info": _MAC_WITH_XCODE, "X-Apple-I-MD": "x"})
+    info = safe["X-MMe-Client-Info"]
+    assert info == anisette.CLIENT_INFO
+    assert info.startswith("<PC> <Windows;")
+    for rejected in ("Mac", "macOS", "Xcode", "Android"):
+        assert rejected not in info
+    assert "com.apple.akd/1.0" in info  # also keeps the token GrandSlam's edge requires
+
+
+def test_client_identity_is_supplied_even_if_the_provider_gives_none() -> None:
+    assert anisette._wire_safe_headers({})["X-MMe-Client-Info"] == anisette.CLIENT_INFO
+
+
+def test_one_identity_reaches_sign_in_two_factor_and_developer_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tokens Apple issues and the services that read them must see the same device."""
+    headers = anisette._wire_safe_headers({"X-MMe-Client-Info": _MAC_WITH_XCODE})
+
+    captured: dict[str, str] = {}
+
+    def fake_http(method: str, url: str, *, headers: dict[str, str], data: bytes | None = None) -> MagicMock:
+        captured.update(headers)
+        response = MagicMock()
+        response.status_code = 200
+        response.url = url
+        response.content = (
+            b'<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+            b"<key>Response</key><dict><key>Status</key><dict><key>ec</key><integer>0</integer>"
+            b"</dict></dict></dict></plist>"
+        )
+        response.headers = {"Content-Type": "text/x-xml-plist"}
+        return response
+
+    monkeypatch.setattr(gsa, "_gsa_http", fake_http)
+    gsa._gs_request({"o": "init", "u": "probe@example.invalid"}, headers)
+    sign_in = captured["X-MMe-Client-Info"]
+    two_factor = gsa._twofa_headers("adsid", "token", headers)["X-MMe-Client-Info"]
+    developer_services = developer._headers({"adsid": "a", "auth_token": "t"}, headers)["X-MMe-Client-Info"]
+    assert sign_in == two_factor == developer_services == anisette.CLIENT_INFO

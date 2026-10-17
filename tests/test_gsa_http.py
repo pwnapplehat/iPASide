@@ -524,3 +524,73 @@ def test_sms_submit_maps_incorrect_code_json_to_gsa_error(
     with pytest.raises(gsa.GsaError, match="Incorrect Verification Code"):
         gsa._submit_sms("adsid", "token", "000000", _ANISETTES)
 
+
+# --------------------------------------------------------------------------- #
+# Sign-in trace (gsa-trace.log)
+# --------------------------------------------------------------------------- #
+
+
+def _plist_response(status: dict[str, object], extra: dict[str, object] | None = None) -> MagicMock:
+    import plistlib
+
+    body: dict[str, object] = {"Status": status}
+    body.update(extra or {})
+    response = MagicMock()
+    response.status_code = 200
+    response.content = plistlib.dumps({"Response": body})
+    response.headers = {"Content-Type": "text/x-xml-plist"}
+    return response
+
+
+def test_trace_records_the_outcome_and_never_a_secret(isolated_data) -> None:
+    secret_token = "SECRET-IDMS-TOKEN-VALUE"
+    response = _plist_response(
+        {"ec": -22411, "em": "This action cannot be completed at this time", "hsc": 409, "au": "trustedDeviceSecondaryAuth"},
+        {"spd": b"encrypted-session-data", "GsIdmsToken": secret_token, "M2": b"proof"},
+    )
+    gsa._trace("GsService2/complete", response)
+    text = (isolated_data / "iPASide" / "gsa-trace.log").read_text(encoding="utf-8")
+    assert "GsService2/complete" in text
+    assert "http=200" in text
+    assert "ec=-22411" in text and "hsc=409" in text
+    assert "trustedDeviceSecondaryAuth" in text
+    assert "keys=" in text  # the names of the fields are kept, so a changed reply shape is visible
+    assert secret_token not in text
+    assert "encrypted-session-data" not in text
+    assert "proof" not in text
+
+
+def test_trace_marks_an_html_error_page_without_copying_it(isolated_data) -> None:
+    response = MagicMock()
+    response.status_code = 503
+    response.content = b"<html><body>Service Temporarily Unavailable secret-page-text</body></html>"
+    response.headers = {"Content-Type": "text/html"}
+    gsa._trace("GsService2/init", response)
+    text = (isolated_data / "iPASide" / "gsa-trace.log").read_text(encoding="utf-8")
+    assert "http=503" in text and " html" in text
+    assert "secret-page-text" not in text
+
+
+def test_trace_never_breaks_sign_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken() -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gsa.paths, "data_dir", broken)
+    gsa._trace("GsService2/init", _plist_response({"ec": 0}))  # must not raise
+
+
+def test_trace_file_stays_small(isolated_data) -> None:
+    path = isolated_data / "iPASide" / "gsa-trace.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes((b"old line of trace output\n") * 20_000)
+    assert path.stat().st_size > gsa._TRACE_MAX_BYTES
+    gsa._trace("GsService2/init", _plist_response({"ec": 0}))
+    assert path.stat().st_size <= gsa._TRACE_MAX_BYTES
+    assert path.read_text(encoding="utf-8").rstrip().endswith("keys=Status")
+
+
+def test_gs_request_writes_a_trace_line(monkeypatch: pytest.MonkeyPatch, isolated_data) -> None:
+    monkeypatch.setattr(gsa, "_gsa_http", lambda *a, **k: _plist_response({"ec": 0}))
+    gsa._gs_request({"o": "init", "u": "probe@example.invalid"}, _ANISETTES)
+    text = (isolated_data / "iPASide" / "gsa-trace.log").read_text(encoding="utf-8")
+    assert "GsService2/init" in text and "ec=0" in text
