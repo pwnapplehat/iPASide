@@ -193,9 +193,14 @@ A Windows app driving a Python engine that does the Apple-facing work:
 
 - **Device I/O** — `pymobiledevice3` (pure Python, Windows-native): pairing,
   lockdown, `installation_proxy` install, AFC staging, Developer Mode.
-- **Apple ID auth** — GrandSlam (GSA, a modified SRP-6a) with **anisette** data
-  generated locally and offline, in a small helper process of the engine so a crash in
-  Apple's emulated libraries cannot take the engine down. No 32-bit Apple DLLs, no remote server.
+- **Apple ID auth** — GrandSlam (GSA, a modified SRP-6a) talking straight to Apple, with
+  **anisette** data from a public Mac anisette service. Apple stopped accepting anisette
+  generated on a PC in October 2026, so every open-source sideloader (iloader, SideStore, xtool)
+  now uses one of these. iPASide gives each install its own identity and tries three servers in
+  turn (`mac-ani.jkcoxson.com`, `new.ani.sidestore.io`, `ani3.stikstore.app`). A service never
+  receives your Apple ID, password, verification code, session token or pairing file; it can see
+  your IP address and the random identifier it provisions. Set `IPASIDE_ANISETTE_SERVER` to use
+  your own server. The earlier local emulator is still there as `IPASIDE_ANISETTE=local`.
 - **TLS** — Apple's own `Apple Root CA` is pinned, and verification is never
   disabled anywhere in the codebase.
 - **Provisioning** — the same `developerservices2.apple.com` API Xcode uses.

@@ -220,6 +220,42 @@ void main() {
       );
     });
 
+    test('AnisetteStatus reads the provider and the services in order', () {
+      final AnisetteStatus status = AnisetteStatus.fromJson(_decode(
+        '{"provider":"remote","state_cached":true,"package_version":"1.2.4",'
+        '"servers":["https://mac-ani.jkcoxson.com","https://new.ani.sidestore.io"]}',
+      ));
+      expect(status.provider, 'remote');
+      expect(status.servers, <String>[
+        'https://mac-ani.jkcoxson.com',
+        'https://new.ani.sidestore.io',
+      ]);
+      expect(status.stateCached, isTrue);
+    });
+
+    test('AnisetteStatus from an older engine has no provider and no services', () {
+      final AnisetteStatus status = AnisetteStatus.fromJson(
+        _decode('{"package_version":"1.2.4","state_cached":false}'),
+      );
+      expect(status.provider, isNull);
+      expect(status.servers, isEmpty);
+    });
+
+    test('AnisetteStatus ignores services that are not strings', () {
+      final AnisetteStatus status = AnisetteStatus.fromJson(
+        _decode('{"provider":"remote","servers":["https://a.example",7,null]}'),
+      );
+      expect(status.servers, <String>['https://a.example']);
+    });
+
+    test('AnisetteStatus equality includes the provider and the services', () {
+      const AnisetteStatus a = AnisetteStatus(provider: 'remote', servers: <String>['x']);
+      expect(a, const AnisetteStatus(provider: 'remote', servers: <String>['x']));
+      expect(a == const AnisetteStatus(provider: 'local', servers: <String>['x']), isFalse);
+      expect(a == const AnisetteStatus(provider: 'remote', servers: <String>['y']), isFalse);
+      expect(a.hashCode, const AnisetteStatus(provider: 'remote', servers: <String>['x']).hashCode);
+    });
+
     test('AppleSupportStatus maps its snake_case fields', () {
       final AppleSupportStatus status = AppleSupportStatus.fromJson(_decode(
         '{"state":"missing","service_name":"Apple Mobile Device Service",'

@@ -1915,13 +1915,32 @@ class DoctorReport {
 /// Result of `anisette`.
 class AnisetteStatus {
   /// Creates an anisette status.
-  const AnisetteStatus({this.packageVersion, this.stateCached = false});
+  const AnisetteStatus({
+    this.packageVersion,
+    this.stateCached = false,
+    this.provider,
+    this.servers = const <String>[],
+  });
 
   /// Parses an `anisette` payload.
-  factory AnisetteStatus.fromJson(Map<String, dynamic> json) => AnisetteStatus(
-        packageVersion: jsonString(json, 'package_version'),
-        stateCached: jsonBool(json, 'state_cached'),
-      );
+  factory AnisetteStatus.fromJson(Map<String, dynamic> json) {
+    final Object? rawServers = json['servers'];
+    return AnisetteStatus(
+      packageVersion: jsonString(json, 'package_version'),
+      stateCached: jsonBool(json, 'state_cached'),
+      provider: jsonString(json, 'provider'),
+      servers: rawServers is List
+          ? rawServers.whereType<String>().toList(growable: false)
+          : const <String>[],
+    );
+  }
+
+  /// `remote` (a Mac anisette service) or `local` (the emulator). Null from an older engine,
+  /// which only had the local provider.
+  final String? provider;
+
+  /// The anisette services tried in order when [provider] is `remote`.
+  final List<String> servers;
 
   /// Version of the `anisette` Python package in use.
   final String? packageVersion;
@@ -1934,14 +1953,25 @@ class AnisetteStatus {
       identical(this, other) ||
       other is AnisetteStatus &&
           other.packageVersion == packageVersion &&
-          other.stateCached == stateCached;
+          other.stateCached == stateCached &&
+          other.provider == provider &&
+          _sameStrings(other.servers, servers);
+
+  static bool _sameStrings(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 
   @override
-  int get hashCode => Object.hash(packageVersion, stateCached);
+  int get hashCode =>
+      Object.hash(packageVersion, stateCached, provider, Object.hashAll(servers));
 
   @override
   String toString() => 'AnisetteStatus(packageVersion: $packageVersion, '
-      'stateCached: $stateCached)';
+      'stateCached: $stateCached, provider: $provider, servers: $servers)';
 }
 
 /// Result of `apple-support`: the state of Apple's device stack on this machine.

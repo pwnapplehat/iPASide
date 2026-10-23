@@ -14,6 +14,10 @@ srp>=1.0.22
 # pymobiledevice3, pinned here because gsa.py imports it directly.
 cryptography>=44
 
+# WebSocket protocol for the remote anisette provisioning session (already installed as a
+# dependency of pymobiledevice3; declared here because the engine now imports it directly).
+wsproto>=1.2
+
 # Public CA roots, combined with the pinned Apple CA for TLS verification.
 certifi>=2024.1.1
 

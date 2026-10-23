@@ -99,11 +99,25 @@ def _check_amds() -> Check:
 
 
 def _check_anisette() -> Check:
-    """Pure-Python anisette provider (the `anisette` package).
+    """The anisette provider: a remote Mac service by default, or the local emulator.
 
-    iPASide generates anisette in-process and cross-platform via the `anisette`
-    package, so it needs neither Apple's 32-bit Windows DLLs nor a remote server.
+    Apple stopped accepting locally generated anisette in October 2026, so by default the
+    headers come from a Mac anisette service (see ``anisette_remote``). The local `anisette`
+    package is only needed when ``IPASIDE_ANISETTE=local`` selects it.
     """
+    from urllib.parse import urlparse
+
+    from . import anisette
+
+    status = anisette.status()
+    if status["provider"] == "remote":
+        hosts = ", ".join(urlparse(server).hostname or server for server in status["servers"])
+        state = "identity provisioned" if status["state_cached"] else "will provision on first login"
+        return {
+            "name": "Anisette provider",
+            "status": OK,
+            "detail": f"remote Mac service ({hosts}); {state}",
+        }
     try:
         version = metadata.version("Anisette")
     except metadata.PackageNotFoundError:

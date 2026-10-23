@@ -514,10 +514,25 @@ class _AnisetteSection extends StatelessWidget {
               title: 'Provider',
               control: SettingsValue(vm.anisetteProvider),
             ),
+            if (vm.anisetteServers.isNotEmpty)
+              SettingsRow(
+                title: 'Services',
+                control: SettingsValue(vm.anisetteServers),
+              ),
             SettingsRow(
               title: 'State',
               control: SettingsValue(vm.anisetteState),
             ),
+            if (vm.anisetteIsRemote)
+              SettingsBlock(
+                child: Text(
+                  'Apple only accepts anisette made by its own macOS libraries, so iPASide '
+                  'gets it from a public Mac service, as iloader, SideStore and xtool do. '
+                  'The service never receives your Apple ID, password, codes or tokens; it '
+                  'can see your IP address.',
+                  style: context.t.bodyMuted,
+                ),
+              ),
           ],
         ],
       );

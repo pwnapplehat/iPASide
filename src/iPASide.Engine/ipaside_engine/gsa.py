@@ -290,7 +290,7 @@ def _gs_request(params: dict[str, Any], headers: dict[str, str]) -> dict[str, An
     req_headers = {
         "Content-Type": "text/x-xml-plist",
         "Accept": "*/*",
-        "User-Agent": _GS_USER_AGENT,
+        "User-Agent": anisette.gsa_user_agent() or _GS_USER_AGENT,
         "X-MMe-Client-Info": _gsa_client_info(headers.get("X-MMe-Client-Info", "")),
     }
     resp = _gsa_http(

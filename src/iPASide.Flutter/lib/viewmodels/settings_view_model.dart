@@ -644,13 +644,22 @@ class SettingsViewModel extends BaseViewModel {
   String? _anisetteError;
   String _anisetteProvider = '';
   String _anisetteState = '';
+  String _anisetteServers = '';
+  bool _anisetteIsRemote = false;
 
   bool get isAnisetteLoading => _isAnisetteLoading;
   String? get anisetteError => _anisetteError;
   bool get hasAnisetteError => _anisetteError != null;
 
-  /// The anisette package in use, e.g. `anisette 1.2.4`.
+  /// Which provider makes the anisette data: `Remote Mac service`, or for the local emulator
+  /// (and older engines that only had it) the package in use, e.g. `anisette 1.2.4`.
   String get anisetteProvider => _anisetteProvider;
+
+  /// The anisette services tried in order, as host names, or empty for the local emulator.
+  String get anisetteServers => _anisetteServers;
+
+  /// True when anisette comes from a remote service, so the privacy note is shown.
+  bool get anisetteIsRemote => _anisetteIsRemote;
 
   /// `provisioned` once state is cached on disk, otherwise `first-use`.
   String get anisetteState => _anisetteState;
@@ -697,7 +706,14 @@ class SettingsViewModel extends BaseViewModel {
   Future<void> _loadAnisette() async {
     try {
       final status = await _engine.anisette();
-      _anisetteProvider = 'anisette ${status.packageVersion ?? '?'}';
+      _anisetteIsRemote = status.provider == 'remote';
+      _anisetteProvider = _anisetteIsRemote
+          ? 'Remote Mac service'
+          : 'anisette ${status.packageVersion ?? '?'}';
+      _anisetteServers = status.servers
+          .map((String s) => Uri.tryParse(s)?.host ?? s)
+          .where((String host) => host.isNotEmpty)
+          .join(', ');
       _anisetteState = status.stateCached ? 'provisioned' : 'first-use';
     } catch (error) {
       if (!BaseViewModel.isShutdown(error)) {

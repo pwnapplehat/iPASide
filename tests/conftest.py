@@ -31,6 +31,16 @@ def isolated_app_data(tmp_path_factory, monkeypatch):
     return root
 
 
+@pytest.fixture(autouse=True)
+def local_anisette_by_default(monkeypatch):
+    """Tests use the local provider unless they ask for the remote one.
+
+    The remote provider talks to a public service; no test should reach the network by accident.
+    The remote tests set up their own loopback server and choose the provider explicitly.
+    """
+    monkeypatch.setenv("IPASIDE_ANISETTE", "local")
+
+
 @pytest.fixture
 def isolated_data(isolated_app_data):
     """This test's throwaway LOCALAPPDATA root, for asserting on derived paths.

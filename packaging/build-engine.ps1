@@ -153,6 +153,8 @@ Write-Host "== Smoke test =="
 $surface = @(
     "ipaside_engine.__main__"
     "ipaside_engine.anisette_worker"
+    "ipaside_engine.anisette_remote"
+    "wsproto"
     "pymobiledevice3.utils"
     "pymobiledevice3.usbmux"
     "pymobiledevice3.lockdown"

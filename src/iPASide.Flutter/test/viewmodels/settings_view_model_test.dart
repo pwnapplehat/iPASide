@@ -483,6 +483,48 @@ void main() {
       expect(model.hasAnisetteError, isFalse);
     });
 
+    test('a remote provider is named, with its services as host names', () async {
+      runner.results['anisette'] = const EngineResult(
+        ok: true,
+        data: <String, dynamic>{
+          'provider': 'remote',
+          'state_cached': true,
+          'servers': <String>[
+            'https://mac-ani.jkcoxson.com',
+            'https://new.ani.sidestore.io',
+            'https://ani3.stikstore.app',
+          ],
+        },
+      );
+
+      final SettingsViewModel model = await load();
+
+      expect(model.anisetteIsRemote, isTrue);
+      expect(model.anisetteProvider, 'Remote Mac service');
+      expect(
+        model.anisetteServers,
+        'mac-ani.jkcoxson.com, new.ani.sidestore.io, ani3.stikstore.app',
+      );
+      expect(model.anisetteState, 'provisioned');
+    });
+
+    test('the local provider keeps the package text and shows no services', () async {
+      runner.results['anisette'] = const EngineResult(
+        ok: true,
+        data: <String, dynamic>{
+          'provider': 'local',
+          'package_version': '1.2.4',
+          'servers': <String>[],
+        },
+      );
+
+      final SettingsViewModel model = await load();
+
+      expect(model.anisetteIsRemote, isFalse);
+      expect(model.anisetteProvider, 'anisette 1.2.4');
+      expect(model.anisetteServers, isEmpty);
+    });
+
     test('reports first-use when no state is cached', () async {
       runner.results['anisette'] = const EngineResult(
         ok: true,
