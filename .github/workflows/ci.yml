@@ -102,7 +102,9 @@ jobs:
         run: |
           zsign=src/iPASide.Engine/ipaside_engine/vendor/zsign.exe
           test -f "$zsign"
-          "$zsign" -h | grep -q -- "--legacy_sha1"
+          # zsign exits non-zero after printing its usage, so read the text and ignore the status.
+          help_text="$("$zsign" -h 2>&1 || true)"
+          grep -q -- "--legacy_sha1" <<< "$help_text"
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
