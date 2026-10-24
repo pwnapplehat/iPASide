@@ -375,6 +375,7 @@ def _cmd_sign(args: argparse.Namespace) -> int:
             bundle_id=args.bundle_id or bundle["bundle_id"],
             remove_extensions=args.remove_extensions,
             remove_uisd=args.remove_device_restrictions,
+            legacy_sha1=args.legacy_sha1,
         )
     except (gsa.GsaError, signing.SigningError) as exc:
         if args.json:
@@ -1476,6 +1477,11 @@ def build_parser() -> argparse.ArgumentParser:
     sign_parser.add_argument("ipa", help="path to the input .ipa file")
     sign_parser.add_argument("--output", "-o", required=True, help="path to the signed .ipa")
     sign_parser.add_argument("--bundle-id", default=None, help="override bundle id (default: provisioned)")
+    sign_parser.add_argument(
+        "--legacy-sha1",
+        action="store_true",
+        help="also add a SHA-1 signature, which iOS 10 and earlier need (sideload does this automatically)",
+    )
     sign_parser.add_argument(
         "--remove-extensions", action=argparse.BooleanOptionalAction, default=True,
         help="remove app extensions + watch app (free-account requirement)",

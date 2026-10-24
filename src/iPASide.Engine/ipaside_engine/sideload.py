@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime
 import os
 import plistlib
+import re
 import shutil
 import stat
 import tempfile
@@ -365,7 +366,9 @@ def run_sideload(
     # issues its profile through the same `ios/` endpoints used for a phone, which is why
     # the platform hints on those calls are ignored. The profile is scoped by the device
     # UDIDs in it, not by a platform.
-    device_class, target_name = _describe_target(udid)
+    device_values = _device_values(udid)
+    device_class, target_name = _describe_target(udid, device_values)
+    legacy_sha1 = _needs_legacy_signature(device_values)
     if not allow_other_platform:
         _check_platform_matches_device(ipa_path, info, device_class)
 
@@ -434,14 +437,23 @@ def run_sideload(
             inject_into_extensions=inject_into_extensions,
             entitlements=entitlements_path,
             temp_folder=str(scratch),
+            legacy_sha1=legacy_sha1,
         )
 
         progress("install", 0, f"Uploading to {target_name}\u2026")
-        apps.install(
-            output,
-            udid,
-            progress=lambda u: progress("install", *_install_relay(u, target_name)),
-        )
+        try:
+            apps.install(
+                output,
+                udid,
+                progress=lambda u: progress("install", *_install_relay(u, target_name)),
+            )
+        except apps.InstallLimitError:
+            raise  # already says exactly what to do
+        except Exception as exc:  # noqa: BLE001 - explain, whatever the installer raised
+            hint = _install_failure_hint(info, device_values, target_name, legacy_sha1)
+            if hint is None:
+                raise
+            raise SideloadError(f"{exc}\n\n{hint}") from exc
 
         post_install: dict[str, Any] | None = None
         if profile:
@@ -530,22 +542,104 @@ _DEVICE_LABELS = {
 }
 
 
-def _describe_target(udid: str) -> tuple[str, str]:
-    """``(device_class, name)`` for the target, both lowercased/blank if unreachable.
+def _device_values(udid: str) -> dict[str, Any]:
+    """The target's lockdown values, or ``{}`` when it cannot be read.
 
-    Read once: the platform check and every "Uploading to ..." label want the same
-    answer, and an unreachable device is the install's problem to report, not this
-    function's - so a failure here degrades to the old wording rather than raising.
+    Read once per sideload and shared: the platform check, the signature format, the
+    "Uploading to ..." label and the failure explanation all want the same answer. An
+    unreachable device is the install's problem to report, not this function's.
     """
     try:
-        values = device.get_device_info(udid)
+        return dict(device.get_device_info(udid))
     except Exception:  # noqa: BLE001
+        return {}
+
+
+def _describe_target(udid: str, values: dict[str, Any] | None = None) -> tuple[str, str]:
+    """``(device_class, name)`` for the target, both lowercased/blank if unreachable.
+
+    A failure to read the device degrades to the old wording rather than raising.
+    """
+    if values is None:
+        values = _device_values(udid)
+    if not values:
         return "", "iPhone"
     device_class = str(values.get("DeviceClass") or "").strip().lower()
     name = str(values.get("DeviceName") or "").strip()
     if not name:
         name = _DEVICE_LABELS.get(_DEVICE_CLASS_PLATFORM.get(device_class, ""), "iPhone")
     return device_class, name
+
+
+#: iOS 10 and earlier verify a SHA-1 CodeDirectory and refuse a SHA-256-only one. Newer iOS takes
+#: either, which is why iPASide signs SHA-256-only for everything else.
+LEGACY_SIGNATURE_MAX_MAJOR = 10
+
+#: Which slices each device CPU can run. Deliberately generous (a 64-bit device is listed as
+#: able to run 32-bit slices, which only iOS 10 and earlier actually does), so the failure
+#: explanation never accuses an app that might in fact run.
+_RUNS_ON = {
+    "armv7": {"armv7"},
+    "armv7s": {"armv7s", "armv7"},
+    "arm64": {"arm64", "armv7s", "armv7"},
+    "arm64e": {"arm64e", "arm64", "armv7s", "armv7"},
+}
+
+_VERSION_RE = re.compile(r"^\s*(\d+(?:\.\d+)*)")
+
+
+def _version_tuple(text: Any) -> tuple[int, ...] | None:
+    """``"6.1.3"`` as ``(6, 1, 3)``; None when it does not start with a version number."""
+    match = _VERSION_RE.match(str(text or ""))
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _needs_legacy_signature(values: dict[str, Any]) -> bool:
+    """True for a device on iOS 10 or earlier, which needs a SHA-1 CodeDirectory."""
+    version = _version_tuple(values.get("ProductVersion"))
+    return version is not None and version[0] <= LEGACY_SIGNATURE_MAX_MAJOR
+
+
+def _install_failure_hint(
+    info: dict[str, Any], values: dict[str, Any], target_name: str, legacy_signed: bool
+) -> str | None:
+    """What is knowably wrong when an install failed, or None when there is nothing to add.
+
+    Apple's installer says things like ``ApplicationVerificationFailed: None``, which tells
+    nobody anything. Only facts that can be read from the app and the device are stated; a
+    guess is never dressed as one.
+    """
+    app_name = info.get("display_name") or info.get("bundle_id") or "This app"
+    os_text = str(values.get("ProductVersion") or "")
+    facts: list[str] = []
+
+    app_minimum = _version_tuple(info.get("minimum_os"))
+    device_version = _version_tuple(os_text)
+    if app_minimum and device_version and app_minimum > device_version:
+        facts.append(
+            f"{app_name} needs iOS {info.get('minimum_os')} or later, and {target_name} is on "
+            f"iOS {os_text}, so the app cannot run there."
+        )
+
+    cpu = str(values.get("CPUArchitecture") or "").strip().lower()
+    arches = [str(a) for a in (info.get("architectures") or [])]
+    if cpu in _RUNS_ON and arches and not (_RUNS_ON[cpu] & set(arches)):
+        facts.append(
+            f"{app_name} only contains code for {', '.join(arches)}, and {target_name} needs "
+            f"{cpu} code."
+        )
+
+    if not facts and device_version and device_version[0] <= LEGACY_SIGNATURE_MAX_MAJOR:
+        facts.append(
+            f"{target_name} runs iOS {os_text}, which is older than iPASide is built for. "
+            + ("iPASide signed the app with the older SHA-1 format that iOS 10 and earlier need, "
+               "so the device is rejecting something else. " if legacy_signed else "")
+            + "Very old iOS can refuse apps for reasons outside iPASide's control, such as a "
+            "newer Apple certificate chain."
+        )
+    return " ".join(facts) or None
 
 
 def _check_platform_matches_device(

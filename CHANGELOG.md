@@ -6,6 +6,28 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.10] - 2026-10-24
+
+### Fixed
+
+- **Sideloading to an iPhone or iPad on iOS 10 or earlier** (issue #11: an iPad 2 on iOS 6.1.3 failed
+  every app with `ApplicationVerificationFailed: None`). iPASide signs with a SHA-256-only code
+  signature, which iOS 11 and later accept, but iOS 10 and earlier only verify a SHA-1 one and refuse
+  the app. Devices on iOS 10 or earlier now get zsign's dual signature (SHA-1 and SHA-256), chosen
+  automatically from the connected device's iOS version; everything newer is signed exactly as before.
+  Checked that the bundled signer produces it, by reading the code signature of an app signed both
+  ways (SHA-256 only, versus SHA-1 in the primary slot plus SHA-256 in the alternate slot). **Not
+  checked on a real iOS 6 to 10 device**, so whether that is the only thing an old device objects to is
+  still open.
+- **A failed install now says what can be read off the app and the device**, instead of passing Apple's
+  one-line message through bare: an app that needs a newer iOS than the device has, or that has no
+  code for the device's CPU (an arm64-only app on a 32-bit iPad). Nothing is claimed that cannot be
+  read, and Apple's own message is kept above the explanation.
+- **Thin 32-bit apps were not recognised** (the Mach-O magic for a little-endian 32-bit binary was
+  written `0xECFAEDFE` instead of `0xCEFAEDFE`). Their CPU architecture could not be read and they
+  skipped the FairPlay-encryption check; both now work.
+- `sign --legacy-sha1` adds the same dual signature when signing by hand.
+
 ## [1.2.9] - 2026-10-23
 
 ### Fixed

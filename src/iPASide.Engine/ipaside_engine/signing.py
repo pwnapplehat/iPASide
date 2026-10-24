@@ -124,8 +124,14 @@ def sign_ipa(
     entitlements: str | None = None,
     zip_level: int = 6,
     temp_folder: str | None = None,
+    legacy_sha1: bool = False,
 ) -> dict[str, Any]:
     """Re-sign an IPA with zsign (modern SHA256-only CodeDirectory + DER entitlements).
+
+    ``legacy_sha1`` adds a SHA-1 CodeDirectory next to the SHA-256 one (zsign ``-L``). iOS 10
+    and earlier only understand SHA-1 and refuse a SHA-256-only signature with
+    ``ApplicationVerificationFailed``; newer iOS accepts either, so this is for those old
+    devices only (see ``sideload._needs_legacy_signature``).
 
     Options map to zsign flags and cover the "advanced" sideload knobs: bundle
     id/name/version overrides, tweak (dylib) injection (optionally weak / into
@@ -153,6 +159,8 @@ def sign_ipa(
     ]
     if temp_folder:
         cmd += ["-t", temp_folder]
+    if legacy_sha1:
+        cmd.append("-L")
     if bundle_id:
         cmd += ["-b", bundle_id]
     if display_name:

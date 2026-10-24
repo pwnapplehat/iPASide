@@ -6,7 +6,7 @@
 # Usage (from repo root):  pwsh packaging/build-installer.ps1 -Version 1.0.0
 
 param(
-    [string]$Version = "1.2.9",
+    [string]$Version = "1.2.10",
     [string]$Python = "",
     [string]$Flutter = ""
 )

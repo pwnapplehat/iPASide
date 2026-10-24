@@ -20,6 +20,22 @@ Map<String, String> _asset(String name) => <String, String>{
     };
 
 void main() {
+  group('AppVersion ordering', () {
+    test('a two-digit patch number is newer, not older (1.2.10 vs 1.2.9)', () {
+      // Compared as text, "1.2.10" sorts before "1.2.9" and nobody would be offered the update.
+      final AppVersion nine = AppVersion.tryParse('1.2.9')!;
+      final AppVersion ten = AppVersion.tryParse('v1.2.10')!;
+      expect(ten > nine, isTrue);
+      expect(nine < ten, isTrue);
+      expect(ten.toString(), '1.2.10');
+    });
+
+    test('minor and major compare numerically too', () {
+      expect(AppVersion.tryParse('1.10.0')! > AppVersion.tryParse('1.9.9')!, isTrue);
+      expect(AppVersion.tryParse('10.0.0')! > AppVersion.tryParse('9.9.9')!, isTrue);
+    });
+  });
+
   group('AppVersion.tryParse', () {
     test('accepts plain, v-prefixed, pre-release and build-metadata forms', () {
       expect(AppVersion.tryParse('1.2.3').toString(), '1.2.3');

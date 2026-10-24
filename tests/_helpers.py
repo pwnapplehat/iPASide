@@ -79,7 +79,8 @@ def decode_png_filter0(data: bytes) -> tuple[int, int, bytes]:
 
 def make_ipa(path: Path, *, bundle_id: str = "com.test.app", name: str = "Test App",
              version: str = "1.0", icon_png: bytes | None = None,
-             with_extension: bool = False) -> Path:
+             with_extension: bool = False, executable: bytes | None = None,
+             minimum_os: str = "14.0") -> Path:
     """A minimal but valid IPA (Payload/<App>.app/Info.plist [+ icon] [+ appex])."""
     info: dict = {
         "CFBundleIdentifier": bundle_id,
@@ -88,13 +89,16 @@ def make_ipa(path: Path, *, bundle_id: str = "com.test.app", name: str = "Test A
         "CFBundleExecutable": "TestApp",
         "CFBundleShortVersionString": version,
         "CFBundleVersion": "1",
-        "MinimumOSVersion": "14.0",
+        "MinimumOSVersion": minimum_os,
     }
     if icon_png is not None:
         info["CFBundleIcons"] = {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60"]}}
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("Payload/Test.app/Info.plist", plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
-        zf.writestr("Payload/Test.app/TestApp", b"\xca\xfe\xba\xbe placeholder")
+        zf.writestr(
+            "Payload/Test.app/TestApp",
+            executable if executable is not None else b"\xca\xfe\xba\xbe placeholder",
+        )
         if icon_png is not None:
             zf.writestr("Payload/Test.app/AppIcon60x60@2x.png", icon_png)
         if with_extension:

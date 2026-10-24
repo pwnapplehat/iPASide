@@ -40,7 +40,11 @@ class IpaError(EngineError):
 
 # Mach-O magics.
 _FAT_MAGICS = {0xCAFEBABE, 0xBEBAFECA, 0xCAFEBABF, 0xBFBAFECA}
-_THIN_MAGICS = {0xFEEDFACE, 0xECFAEDFE, 0xFEEDFACF, 0xCFFAEDFE}
+# Read as a big-endian integer from disk: 32-bit big-endian, 32-bit little-endian, 64-bit
+# big-endian, 64-bit little-endian. The 32-bit little-endian one is 0xCEFAEDFE (the bytes
+# CE FA ED FE); it used to read 0xECFAEDFE, so thin 32-bit apps - the only kind an old
+# iPad or iPhone can run - were seen as "not a Mach-O" and their architecture was lost.
+_THIN_MAGICS = {0xFEEDFACE, 0xCEFAEDFE, 0xFEEDFACF, 0xCFFAEDFE}
 _LC_ENCRYPTION_INFO = 0x21
 _LC_ENCRYPTION_INFO_64 = 0x2C
 
@@ -63,6 +67,11 @@ def macho_arches(path: str | Path) -> set[str]:
             data = fh.read(1 << 16)
     except OSError:
         return set()
+    return macho_arches_from_header(data)
+
+
+def macho_arches_from_header(data: bytes) -> set[str]:
+    """The CPU architectures named by the first bytes of a Mach-O (thin or universal) file."""
     if len(data) < 8:
         return set()
     magic = struct.unpack_from(">I", data, 0)[0]
@@ -302,6 +311,31 @@ def _extract_icon(
         return None
 
 
+#: The ARM architectures an iPhone, iPad, Apple TV or Watch binary can have. Anything else a
+#: header seems to name (a damaged header decodes to nonsense like ``cpu1667590255``, a
+#: Simulator build is x86_64) is not reported, so it can never be mistaken for a real slice.
+_DEVICE_ARCHES = {"armv7", "armv7s", "arm64", "arm64e", "arm64_32"}
+
+
+def _executable_arches(zf: zipfile.ZipFile, names: list[str], app: str, info: dict[str, Any]) -> list[str]:
+    """CPU architectures of the app's main executable, read from its header only.
+
+    Empty when the executable is missing, is not a Mach-O file, or names nothing recognisable:
+    "could not tell" must stay distinguishable from "has none", because callers use this to
+    explain a failure and must not accuse an app they could not read.
+    """
+    executable = info.get("CFBundleExecutable")
+    entry = f"{app}/{executable}" if executable else ""
+    if not entry or entry not in names:
+        return []
+    try:
+        with zf.open(entry) as handle:
+            head = handle.read(1 << 16)
+    except Exception:  # noqa: BLE001 - an unreadable member is simply "unknown"
+        return []
+    return sorted(a for a in macho_arches_from_header(head) if a in _DEVICE_ARCHES)
+
+
 def inspect(ipa_path: str) -> dict[str, Any]:
     """Read an IPA's identity and structure without extracting it.
 
@@ -317,6 +351,7 @@ def inspect(ipa_path: str) -> dict[str, Any]:
             app = _app_relpath(names, name)
             info = plistlib.loads(zf.read(f"{app}/Info.plist"))
             icon = _extract_icon(zf, names, app, info)
+            architectures = _executable_arches(zf, names, app, info)
     except IpaError:
         raise  # already phrased for a person
     except FileNotFoundError:
@@ -346,6 +381,7 @@ def inspect(ipa_path: str) -> dict[str, Any]:
         "version": info.get("CFBundleShortVersionString"),
         "build": info.get("CFBundleVersion"),
         "minimum_os": info.get("MinimumOSVersion"),
+        "architectures": architectures,
         "platform_sdk": info.get("DTPlatformVersion"),
         "device_family": info.get("UIDeviceFamily"),
         "platform": _platform(info),
@@ -410,7 +446,7 @@ def _read_thin_cryptid(data: bytes, base: int) -> bool | None:
     if magic in (0xFEEDFACF, 0xFEEDFACE):  # big-endian
         endian = ">"
         is64 = magic == 0xFEEDFACF
-    elif magic in (0xCFFAEDFE, 0xECFAEDFE):  # little-endian
+    elif magic in (0xCFFAEDFE, 0xCEFAEDFE):  # little-endian
         endian = "<"
         is64 = magic == 0xCFFAEDFE
     else:
