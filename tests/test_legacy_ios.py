@@ -75,10 +75,18 @@ def test_the_legacy_signature_flag_is_only_added_when_asked(monkeypatch: pytest.
 
 
 def test_the_bundled_signer_really_has_the_dual_signature_option() -> None:
-    """The flag is only worth passing if the zsign that ships understands it."""
+    """The flag is only worth passing if the zsign that ships understands it.
+
+    zsign.exe is built from source by the installer job and is not in the repository, so a plain
+    test run has no binary to ask; that job runs the same check on the freshly built one.
+    """
     import subprocess
 
-    help_text = subprocess.run([signing.resolve_zsign(), "-h"], capture_output=True, text=True).stdout
+    try:
+        zsign = signing.resolve_zsign()
+    except signing.SigningError:
+        pytest.skip("zsign.exe is built by the installer job (checked there), not present here")
+    help_text = subprocess.run([zsign, "-h"], capture_output=True, text=True).stdout
     assert "--legacy_sha1" in help_text and "SHA1+SHA256" in help_text
 
 

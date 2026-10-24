@@ -94,6 +94,16 @@ jobs:
         shell: msys2 {0}
         run: bash tools/zsign/build-zsign.sh
 
+      # iOS 10 and earlier only verify a SHA-1 signature, and iPASide asks zsign for one with -L
+      # (issue #11). This job is where the signer exists, so a signer that ever loses the option
+      # fails the build here instead of failing on somebody's iPad.
+      - name: Check zsign can sign for iOS 10 and earlier
+        shell: bash
+        run: |
+          zsign=src/iPASide.Engine/ipaside_engine/vendor/zsign.exe
+          test -f "$zsign"
+          "$zsign" -h | grep -q -- "--legacy_sha1"
+
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
