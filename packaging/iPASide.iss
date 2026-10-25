@@ -6,7 +6,7 @@
 ; Output: dist\installer\iPASide-Setup-<ver>-x64.exe
 
 #ifndef AppVersion
-  #define AppVersion "1.2.10"
+  #define AppVersion "1.2.11"
 #endif
 #define AppName "iPASide"
 #define AppPublisher "iPASide Contributors"

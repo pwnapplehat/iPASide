@@ -76,10 +76,14 @@ void main() {
   }
 
   /// Runs step one against a `2fa_required` response so the code step is live.
-  Future<void> reachCodeStep({String? method = 'sms'}) async {
+  Future<void> reachCodeStep({String? method = 'sms', String? notice}) async {
     runner.result = EngineResult(
       ok: true,
-      data: <String, dynamic>{'status': '2fa_required', 'method': ?method},
+      data: <String, dynamic>{
+        'status': '2fa_required',
+        'method': ?method,
+        'notice': ?notice,
+      },
     );
     enterCredentials();
     await viewModel.submit();
@@ -256,6 +260,23 @@ void main() {
         'A verification code was sent to your trusted device. '
         'Enter it to finish.',
       );
+    });
+
+    test('the engine notice replaces the usual line when no text could be sent',
+        () async {
+      await reachCodeStep(
+        method: 'trusteddevice',
+        notice: 'Apple would not text a verification code (HTTP 403). '
+            'If a code appeared on one of your Apple devices, enter it to finish.',
+      );
+
+      expect(viewModel.isCodeStep, isTrue);
+      expect(
+        viewModel.codeHint,
+        'Apple would not text a verification code (HTTP 403). '
+        'If a code appeared on one of your Apple devices, enter it to finish.',
+      );
+      expect(viewModel.codeHint, isNot(contains('was sent to your trusted')));
     });
 
     test('a missing delivery method names the trusted device', () async {

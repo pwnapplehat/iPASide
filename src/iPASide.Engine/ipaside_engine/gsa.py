@@ -63,6 +63,12 @@ _TRUSTED_TRIGGER = "https://gsa.apple.com/auth/verify/trusteddevice"
 _VALIDATE = "https://gsa.apple.com/grandslam/GsService2/validate"
 _SMS_ENDPOINT = "https://gsa.apple.com/auth/verify/phone"
 _SMS_SUBMIT = "https://gsa.apple.com/auth/verify/phone/securitycode"
+#: Answers with the account's trusted phone numbers (and their ids) as JSON.
+_AUTH_INFO = "https://gsa.apple.com/auth"
+#: Apple's first trusted number. Only a guess, used when Apple will not list the real ones.
+_DEFAULT_PHONE_ID = 1
+#: ``serviceErrors`` codes that mean "a text was already sent; enter the last code".
+_SMS_CODE_STILL_VALID = frozenset({"-22979", "-22981"})
 
 _GS_USER_AGENT = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0"
 _XCODE_APP_INFO = "com.apple.gs.xcode.auth"
@@ -80,6 +86,11 @@ _GSA_CLIENT_TOKEN = "com.apple.akd/1.0"
 #: Apple refuses with ``-22411`` / ``hsc 401``.
 _HSC_CODE_ALREADY_SENT = 409
 SECONDARY_CODE_ALREADY_SENT = "codeAlreadySent"
+#: A text-message challenge (``au == "secondaryAuth"``) that also carries ``hsc 409``. Apple may
+#: have pushed a code to the person's devices as well, so if the text itself is refused that code
+#: is still worth asking for.
+SECONDARY_SMS_CODE_ALREADY_SENT = "secondaryAuthCodeAlreadySent"
+_AU_SMS = "secondaryAuth"
 #: ``au == "repair"`` means the account has no second factor set up; it is not a challenge.
 _AU_NO_SECOND_FACTOR = "repair"
 
@@ -139,6 +150,27 @@ _TRACE_MAX_BYTES = 200_000
 _TRACE_STATUS_KEYS = ("ec", "em", "hsc", "au")
 
 
+def _json_trace_parts(content: bytes) -> list[str]:
+    """What a JSON reply (the text-message endpoints) adds to the trace: field names, Apple's error
+    code and how many trusted numbers it listed. Never a value."""
+    try:
+        parsed = json.loads(content)
+    except Exception:  # noqa: BLE001 - empty bodies and HTML are not JSON
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    parts = ["json=" + ",".join(sorted(str(k) for k in parsed))]
+    errors = parsed.get("serviceErrors")
+    if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+        code = errors[0].get("code")
+        if isinstance(code, (str, int)):
+            parts.append(f"svc={code}")
+    numbers = parsed.get("trustedPhoneNumbers")
+    if isinstance(numbers, list):
+        parts.append(f"numbers={len(numbers)}")
+    return parts
+
+
 def _trace(label: str, response: requests.Response) -> None:
     """Append one line about a GrandSlam exchange to ``gsa-trace.log`` in the data folder.
 
@@ -169,6 +201,8 @@ def _trace(label: str, response: requests.Response) -> None:
                             if key in status:
                                 parts.append(f"{key}={status[key]!r}")
                     parts.append("keys=" + ",".join(sorted(str(k) for k in body)))
+            else:
+                parts.extend(_json_trace_parts(content))
         path = paths.data_dir() / _TRACE_FILE
         if path.exists() and path.stat().st_size > _TRACE_MAX_BYTES:
             tail = path.read_bytes()[-_TRACE_MAX_BYTES // 2 :]
@@ -347,11 +381,14 @@ def _secondary_auth(status: dict[str, Any]) -> str | None:
     """The second factor a ``complete`` reply asks for, or None when the sign-in is done.
 
     Returns Apple's ``au`` value, or :data:`SECONDARY_CODE_ALREADY_SENT` when Apple has already
-    pushed a trusted-device code (``hsc 409``) without naming one.
+    pushed a trusted-device code (``hsc 409``) without naming one. A text-message challenge that
+    also carries ``hsc 409`` is :data:`SECONDARY_SMS_CODE_ALREADY_SENT`.
     """
     au = status.get("au")
     if au == _AU_NO_SECOND_FACTOR:
         return None
+    if au == _AU_SMS and status.get("hsc") == _HSC_CODE_ALREADY_SENT:
+        return SECONDARY_SMS_CODE_ALREADY_SENT
     if au:
         return au
     if status.get("hsc") == _HSC_CODE_ALREADY_SENT:
@@ -468,41 +505,124 @@ def _sms_headers(adsid: str, idms_token: str, headers: dict[str, str]) -> dict[s
     return out
 
 
-def _sms_body(code: str | None = None) -> bytes:
+def _sms_body(code: str | None = None, phone_id: int = _DEFAULT_PHONE_ID) -> bytes:
     """JSON body for SMS trigger (no code) or submit (with code).
 
-    Phone id ``1`` is Apple's first trusted number, which community GrandSlam
-    clients use when the account has a single SMS destination.
+    ``phone_id`` is one of the ids Apple lists for the account's trusted numbers. Id ``1`` is only
+    the guess community GrandSlam clients make, right when the account has a single number that
+    was never replaced.
     """
-    payload: dict[str, Any] = {"phoneNumber": {"id": 1}, "mode": "sms"}
+    payload: dict[str, Any] = {"phoneNumber": {"id": phone_id}, "mode": "sms"}
     if code is not None:
         payload["securityCode"] = {"code": code}
     return json.dumps(payload).encode("utf-8")
 
 
-def _trigger_sms(adsid: str, idms_token: str, headers: dict[str, str]) -> None:
+def _trusted_phone_numbers(
+    adsid: str, idms_token: str, headers: dict[str, str]
+) -> list[dict[str, Any]]:
+    """The account's trusted phone numbers as Apple lists them, or [] when it will not say.
+
+    Each entry carries an ``id`` (what the text-message endpoints take), ``lastTwoDigits`` and
+    ``pushMode``. Asking is best effort: a failure here must not stop a sign-in that would work
+    with the default id.
+    """
+    try:
+        resp = _gsa_http("GET", _AUTH_INFO, headers=_sms_headers(adsid, idms_token, headers))
+    except Exception:  # noqa: BLE001 - the trigger below still has a sensible default
+        return []
+    _trace("auth/numbers", resp)
+    try:
+        parsed = json.loads(resp.content)
+    except Exception:  # noqa: BLE001 - an HTML page or an empty body
+        return []
+    listed = parsed.get("trustedPhoneNumbers") if isinstance(parsed, dict) else None
+    if not isinstance(listed, list):
+        return []
+    return [
+        item
+        for item in listed
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), int)
+        and not isinstance(item.get("id"), bool)
+    ]
+
+
+def _pick_phone_id(numbers: list[dict[str, Any]]) -> int:
+    """The number to text: the first one Apple delivers by SMS, else the first, else the default."""
+    for item in numbers:
+        if item.get("pushMode") == "sms":
+            return item["id"]
+    if numbers:
+        return numbers[0]["id"]
+    return _DEFAULT_PHONE_ID
+
+
+def _sms_code_still_valid(resp: requests.Response) -> bool:
+    """True when Apple declined a new text only because one is already on its way.
+
+    That is ``serviceErrors`` -22979 / -22981 (too many codes sent, enter the last one), or HTTP 412
+    carrying an open challenge. The person still has a valid code, so they should be asked for it.
+    """
+    if _gsa_json_service_code(resp) in _SMS_CODE_STILL_VALID:
+        return True
+    if resp.status_code != 412:
+        return False
+    try:
+        parsed = json.loads(resp.content)
+    except Exception:  # noqa: BLE001
+        return False
+    code = parsed.get("securityCode") if isinstance(parsed, dict) else None
+    if not isinstance(code, dict):
+        return False
+    blocked = ("tooManyCodesValidated", "securityCodeLocked", "securityCodeCooldown")
+    return not any(code.get(flag) for flag in blocked)
+
+
+def _trigger_sms(adsid: str, idms_token: str, headers: dict[str, str]) -> int:
     """Ask Apple to SMS a verification code to the account's trusted number.
+
+    Returns the phone id the text went to; the code has to be submitted with the same one.
 
     ``PUT /auth/verify/phone`` (no trailing slash) is the live method: a
     trailing slash is HTTP 405. HTTP 423 means Apple already sent codes
     (``tooManyCodesSent``); the user should enter the last one.
     """
+    phone_id = _pick_phone_id(_trusted_phone_numbers(adsid, idms_token, headers))
     resp = _gsa_http(
         "PUT",
         _SMS_ENDPOINT,
         headers=_sms_headers(adsid, idms_token, headers),
-        data=_sms_body(),
+        data=_sms_body(phone_id=phone_id),
     )
     _trace("sms/trigger", resp)
     if _gsa_spent_connection(resp):
         _raise_for_gsa_http(resp)
-    if resp.status_code in (200, 201, 202, 423):
-        return
-    _raise_for_gsa_http(resp)
+    if resp.status_code in (200, 201, 202, 423) or _sms_code_still_valid(resp):
+        return phone_id
+    detail = _gsa_json_service_error(resp)
+    message = f"Apple would not text a verification code (HTTP {resp.status_code})"
+    if detail:
+        raise GsaError(f"{message}: {detail}.")
     raise GsaError(
-        f"Apple did not send a verification code (HTTP {resp.status_code}). "
-        "Check your connection and try signing in again."
+        f"{message}. That is Apple's answer to the request, not a wrong password; "
+        "wait a few minutes and try again."
     )
+
+
+def _gsa_json_service_code(response: requests.Response) -> str | None:
+    """Apple's JSON 2FA error code (``-22979``...), or None if the body has none."""
+    try:
+        parsed = json.loads(response.content)
+    except Exception:  # noqa: BLE001 - HTML 503 and empty bodies are not JSON
+        return None
+    errors = parsed.get("serviceErrors") if isinstance(parsed, dict) else None
+    if not isinstance(errors, list) or not errors or not isinstance(errors[0], dict):
+        return None
+    code = errors[0].get("code")
+    if isinstance(code, bool) or not isinstance(code, (str, int)):
+        return None
+    return str(code)
 
 
 def _gsa_json_service_error(response: requests.Response) -> str | None:
@@ -529,12 +649,18 @@ def _gsa_json_service_error(response: requests.Response) -> str | None:
     return ": ".join(dict.fromkeys(parts))
 
 
-def _submit_sms(adsid: str, idms_token: str, code: str, headers: dict[str, str]) -> None:
+def _submit_sms(
+    adsid: str,
+    idms_token: str,
+    code: str,
+    headers: dict[str, str],
+    phone_id: int = _DEFAULT_PHONE_ID,
+) -> None:
     resp = _gsa_http(
         "POST",
         _SMS_SUBMIT,
         headers=_sms_headers(adsid, idms_token, headers),
-        data=_sms_body(code),
+        data=_sms_body(code, phone_id),
     )
     _trace("sms/submit", resp)
     if _gsa_spent_connection(resp):
@@ -617,9 +743,13 @@ def _finalize_session(email: str, spd: dict[str, Any], headers: dict[str, str]) 
 # --------------------------------------------------------------------------- #
 # Session persistence
 # --------------------------------------------------------------------------- #
-def _save_pending(email: str, adsid: str, idms_token: str, method: str) -> None:
+def _save_pending(
+    email: str, adsid: str, idms_token: str, method: str, *, phone_id: int = _DEFAULT_PHONE_ID
+) -> None:
     paths.pending_2fa_file().write_text(
-        json.dumps({"email": email, "adsid": adsid, "idms": idms_token, "method": method}),
+        json.dumps(
+            {"email": email, "adsid": adsid, "idms": idms_token, "method": method, "phone_id": phone_id}
+        ),
         encoding="utf-8",
     )
 
@@ -853,17 +983,33 @@ def begin_login(email: str, password: str) -> dict[str, Any]:
         return _finalize_session(email, spd, headers)
 
     adsid, idms = spd["adsid"], spd["GsIdmsToken"]
+    phone_id = _DEFAULT_PHONE_ID
+    notice: str | None = None
     if secondary == SECONDARY_CODE_ALREADY_SENT:
         # Apple pushed the code during the sign-in itself, so there is nothing to trigger.
         method = "trusteddevice"
+    elif secondary == "trustedDeviceSecondaryAuth":
+        method = "trusteddevice"
+        _trigger_trusted(adsid, idms, anisette.get_headers())
     else:
-        method = "trusteddevice" if secondary == "trustedDeviceSecondaryAuth" else "sms"
-        if method == "trusteddevice":
-            _trigger_trusted(adsid, idms, anisette.get_headers())
-        else:
-            _trigger_sms(adsid, idms, anisette.get_headers())
-    _save_pending(email, adsid, idms, method)
-    return {"status": "2fa_required", "method": method}
+        method = "sms"
+        try:
+            phone_id = _trigger_sms(adsid, idms, anisette.get_headers())
+        except GsaError as exc:
+            if secondary != SECONDARY_SMS_CODE_ALREADY_SENT:
+                raise
+            # Apple flagged this sign-in as having sent a code already (hsc 409). If the text is
+            # refused, that code, when it reached one of the person's devices, still works.
+            method = "trusteddevice"
+            notice = (
+                f"{exc} If a code appeared on one of your Apple devices, enter it to finish. "
+                "Otherwise wait a few minutes and sign in again."
+            )
+    _save_pending(email, adsid, idms, method, phone_id=phone_id)
+    result: dict[str, Any] = {"status": "2fa_required", "method": method}
+    if notice:
+        result["notice"] = notice
+    return result
 
 
 def complete_2fa(email: str, password: str, code: str) -> dict[str, Any]:
@@ -874,11 +1020,14 @@ def complete_2fa(email: str, password: str, code: str) -> dict[str, Any]:
     if pending["method"] == "trusteddevice":
         _submit_trusted(pending["adsid"], pending["idms"], code, anisette.get_headers())
     else:
-        _submit_sms(pending["adsid"], pending["idms"], code, anisette.get_headers())
+        phone_id = pending.get("phone_id")
+        if not isinstance(phone_id, int) or isinstance(phone_id, bool):
+            phone_id = _DEFAULT_PHONE_ID
+        _submit_sms(pending["adsid"], pending["idms"], code, anisette.get_headers(), phone_id)
 
     headers = anisette.get_headers()
     spd, secondary = _authenticate_once(email, password, headers)
-    if secondary == SECONDARY_CODE_ALREADY_SENT:
+    if secondary in (SECONDARY_CODE_ALREADY_SENT, SECONDARY_SMS_CODE_ALREADY_SENT):
         raise GsaError(
             "Apple still wants a verification code. The code may have expired or been "
             "mistyped; sign in again to get a new one."

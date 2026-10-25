@@ -95,8 +95,9 @@ class SignInViewModel extends BaseViewModel {
       final result = await _engine.login(email.text, password.text);
       if (result.requiresTwoFactor) {
         final channel = result.method == 'sms' ? 'phone' : 'device';
-        _codeHint = 'A verification code was sent to your trusted $channel. '
-            'Enter it to finish.';
+        _codeHint = result.notice ??
+            'A verification code was sent to your trusted $channel. '
+                'Enter it to finish.';
         _isCodeStep = true;
         _setMessage('', SignInMessageTone.none);
       } else {

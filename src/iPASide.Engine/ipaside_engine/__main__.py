@@ -993,7 +993,9 @@ def _cmd_login(args: argparse.Namespace) -> int:
         return 0
     if result["status"] == "2fa_required":
         print(f"Two-factor authentication required (method: {result['method']}).")
-        if result["method"] == "sms":
+        if result.get("notice"):
+            print(result["notice"])
+        elif result["method"] == "sms":
             print("A verification code was sent to your trusted phone number.")
         else:
             print("A verification code was sent to your trusted device(s).")

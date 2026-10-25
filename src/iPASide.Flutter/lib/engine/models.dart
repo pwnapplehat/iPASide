@@ -219,12 +219,13 @@ class AppleAccount {
 /// Result of `login` / `login --code`.
 class LoginResult {
   /// Creates a login outcome.
-  const LoginResult({this.status, this.method});
+  const LoginResult({this.status, this.method, this.notice});
 
   /// Parses a `login` payload.
   factory LoginResult.fromJson(Map<String, dynamic> json) => LoginResult(
         status: jsonString(json, 'status'),
         method: jsonString(json, 'method'),
+        notice: jsonString(json, 'notice'),
       );
 
   /// `2fa_required` or `authenticated`.
@@ -233,19 +234,27 @@ class LoginResult {
   /// How the verification code was delivered, when 2FA is required.
   final String? method;
 
+  /// What to tell the person instead of the usual "a code was sent" line, when the engine could
+  /// not deliver the code the usual way (Apple refused the text message).
+  final String? notice;
+
   /// Whether the engine is waiting for a two-factor code.
   bool get requiresTwoFactor => status == '2fa_required';
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LoginResult && other.status == status && other.method == method;
+      other is LoginResult &&
+          other.status == status &&
+          other.method == method &&
+          other.notice == notice;
 
   @override
-  int get hashCode => Object.hash(status, method);
+  int get hashCode => Object.hash(status, method, notice);
 
   @override
-  String toString() => 'LoginResult(status: $status, method: $method)';
+  String toString() =>
+      'LoginResult(status: $status, method: $method, notice: $notice)';
 }
 
 /// Result of `inspect`.

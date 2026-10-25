@@ -29,8 +29,11 @@ from ipaside_engine import gsa
         # the old replies still work
         ({"ec": 0, "au": "trustedDeviceSecondaryAuth", "hsc": 200}, "trustedDeviceSecondaryAuth"),
         ({"ec": 0, "au": "secondaryAuth"}, "secondaryAuth"),
-        # au is the more specific statement, so it wins over hsc
-        ({"ec": 0, "au": "secondaryAuth", "hsc": 409}, "secondaryAuth"),
+        # a text challenge that also pushed a code: still texted first, with the pushed code as the
+        # fallback (the reply shape of issue #12; the same shape texted fine on 2026-10-23)
+        ({"ec": 0, "au": "secondaryAuth", "hsc": 409}, gsa.SECONDARY_SMS_CODE_ALREADY_SENT),
+        # any other au is the more specific statement, so it wins over hsc
+        ({"ec": 0, "au": "trustedDeviceSecondaryAuth", "hsc": 409}, "trustedDeviceSecondaryAuth"),
         # no second factor at all
         ({"ec": 0, "em": "", "hsc": 200}, None),
         ({"ec": 0}, None),

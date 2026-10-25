@@ -120,6 +120,25 @@ void main() {
       );
     });
 
+    test('LoginResult carries the engine notice when a text could not be sent', () {
+      final LoginResult result = LoginResult.fromJson(_decode(
+        '{"status":"2fa_required","method":"trusteddevice",'
+        '"notice":"Apple would not text a verification code (HTTP 403)."}',
+      ));
+
+      expect(result.method, 'trusteddevice');
+      expect(result.notice, 'Apple would not text a verification code (HTTP 403).');
+      expect(
+        LoginResult.fromJson(_decode('{"status":"2fa_required","method":"sms"}'))
+            .notice,
+        isNull,
+      );
+      expect(
+        result,
+        isNot(const LoginResult(status: '2fa_required', method: 'trusteddevice')),
+      );
+    });
+
     test('SignedIpaListing maps the totals and the files', () {
       final SignedIpaListing listing = SignedIpaListing.fromJson(_decode(
         '{"directory":"C:\\\\signed","count":2,"bytes":488636416,'

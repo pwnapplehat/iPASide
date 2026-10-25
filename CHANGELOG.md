@@ -6,6 +6,25 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.11] - 2026-10-25
+
+### Fixed
+
+- **Apple ID sign-in stopped at the text-message step with HTTP 403** (issue #12; the same 403 is
+  reported in iloader#932). iPASide always asked Apple to text phone number id `1`, a guess that is
+  only right for an account with a single number that was never replaced. It now asks Apple for the
+  account's trusted numbers and texts a real one (preferring a number Apple delivers by text), and the
+  code is submitted for the same number. If Apple cannot list the numbers, the old default is used, so
+  accounts that worked keep working. **Not confirmed against the reporter's account**: Apple's 403 has
+  no readable explanation in the log, so whether a wrong number id was the cause is still open.
+- **A refused text message now says so** ("Apple would not text a verification code (HTTP 403)") and
+  quotes Apple's own explanation when it gives one, instead of a generic connection error. When Apple
+  had already pushed a code to the person's devices during the same sign-in, iPASide now asks for that
+  code instead of failing. Replies that mean "a code is already on its way" (Apple's -22979 / -22981
+  and an open challenge) are accepted, so the person is asked for the last code rather than blocked.
+- `gsa-trace.log` now records Apple's error code (`svc=`) and how many trusted numbers it listed for
+  the text-message steps, never a number or a message.
+
 ## [1.2.10] - 2026-10-24
 
 ### Fixed
