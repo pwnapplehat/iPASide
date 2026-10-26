@@ -110,40 +110,49 @@ class _DialogCard extends StatelessWidget {
             },
             child: Focus(
               autofocus: true,
-              child: Container(
-                padding: Pad.dialog,
-                decoration: BoxDecoration(
-                  gradient: p.cardGradient,
-                  borderRadius: Radii.rLarge,
-                  border: Border.all(color: p.cardBorder),
-                  boxShadow: p.liftShadow,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title, style: context.t.title),
-                    const SizedBox(height: Space.s3),
-                    Text(message, style: context.t.bodyMuted),
-                    const SizedBox(height: Space.s6),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        if (cancelLabel != null) ...[
+              child: Semantics(
+                // A dialog is its own screen for a screen reader: this is what
+                // makes it announce the title on opening rather than leaving the
+                // user to find the new content unheralded.
+                scopesRoute: true,
+                namesRoute: true,
+                explicitChildNodes: true,
+                label: title,
+                child: Container(
+                  padding: Pad.dialog,
+                  decoration: BoxDecoration(
+                    gradient: p.cardGradient,
+                    borderRadius: Radii.rLarge,
+                    border: Border.all(color: p.cardBorder),
+                    boxShadow: p.liftShadow,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: context.t.title),
+                      const SizedBox(height: Space.s3),
+                      Text(message, style: context.t.bodyMuted),
+                      const SizedBox(height: Space.s6),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          if (cancelLabel != null) ...[
+                            AppButton(
+                              label: cancelLabel!,
+                              onPressed: () => Navigator.of(context).pop(false),
+                            ),
+                            const SizedBox(width: Space.s2),
+                          ],
                           AppButton(
-                            label: cancelLabel!,
-                            onPressed: () => Navigator.of(context).pop(false),
+                            label: confirmLabel,
+                            tone: danger ? ButtonTone.danger : ButtonTone.primary,
+                            onPressed: () => Navigator.of(context).pop(true),
                           ),
-                          const SizedBox(width: Space.s2),
                         ],
-                        AppButton(
-                          label: confirmLabel,
-                          tone: danger ? ButtonTone.danger : ButtonTone.primary,
-                          onPressed: () => Navigator.of(context).pop(true),
-                        ),
-                      ],
-                    ),
-                  ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

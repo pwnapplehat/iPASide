@@ -45,6 +45,9 @@ class AppButton extends StatelessWidget {
       enabled: _enabled,
       pressScale: 0.97,
       tooltip: tooltip,
+      // Named even when it is disabled or busy, where it has no action and would
+      // otherwise be an anonymous piece of text.
+      semanticsLabel: label,
       builder: (hovered, pressed) => switch (tone) {
         ButtonTone.primary => _primary(context, hovered, pressed),
         ButtonTone.soft => _outlined(context, hovered, pressed, danger: false),
@@ -153,6 +156,8 @@ class GhostIconButton extends StatelessWidget {
       enabled: onPressed != null && !busy,
       pressScale: 1,
       tooltip: tooltip,
+      // No text to read, so the tooltip is the only name this control has.
+      semanticsLabel: tooltip,
       builder: (hovered, pressed) {
         final bg = !hovered
             ? Colors.transparent

@@ -29,6 +29,8 @@ class Expander extends StatelessWidget {
         Hoverable(
           onTap: () => onToggle(!expanded),
           pressScale: 1,
+          // Says whether the section is open, not just that it is clickable.
+          expanded: expanded,
           builder: (hovered, _) => AnimatedContainer(
             duration: Motion.fast,
             curve: Motion.curve,
@@ -67,7 +69,13 @@ class Expander extends StatelessWidget {
             child: AnimatedOpacity(
               opacity: expanded ? 1 : 0,
               duration: Motion.base,
-              child: child,
+              // A collapsed section is zero-height but still in the tree, so
+              // without this its controls stay Tab stops and stay readable —
+              // a screen reader would walk into a panel nobody can see.
+              child: ExcludeFocus(
+                excluding: !expanded,
+                child: ExcludeSemantics(excluding: !expanded, child: child),
+              ),
             ),
           ),
         ),

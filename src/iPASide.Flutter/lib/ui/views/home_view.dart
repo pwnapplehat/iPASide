@@ -359,10 +359,15 @@ class _AccountSwitcher extends StatelessWidget {
             ),
           ),
       ],
-      child: AppButton(
-        label: 'Switch',
-        compact: true,
-        onPressed: null,
+      child: ExcludeSemantics(
+        // The menu button owns the action and announces itself; the button
+        // inside it is only the visual, so it must not appear as a second,
+        // permanently disabled control.
+        child: AppButton(
+          label: 'Switch',
+          compact: true,
+          onPressed: null,
+        ),
       ),
     );
   }

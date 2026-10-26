@@ -273,16 +273,22 @@ class SideloadStepper extends StatelessWidget {
               ),
             const SizedBox(width: Space.s3),
             Expanded(
-              child: AnimatedSwitcher(
-                duration: Motion.base,
-                layoutBuilder: (current, previous) => Stack(
-                  alignment: Alignment.centerLeft,
-                  children: [...previous, ?current],
-                ),
-                child: Text(
-                  stepText ?? '',
-                  key: ValueKey(stepText),
-                  style: context.t.body.copyWith(color: textColor),
+              // The run reports itself as it goes; without a live region a
+              // screen-reader user has to hunt for the current step after every
+              // press, and an install looks like it did nothing.
+              child: Semantics(
+                liveRegion: true,
+                child: AnimatedSwitcher(
+                  duration: Motion.base,
+                  layoutBuilder: (current, previous) => Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [...previous, ?current],
+                  ),
+                  child: Text(
+                    stepText ?? '',
+                    key: ValueKey(stepText),
+                    style: context.t.body.copyWith(color: textColor),
+                  ),
                 ),
               ),
             ),
@@ -329,33 +335,48 @@ class _StepMarker extends StatelessWidget {
             ? p.accent
             : p.hairlineStrong;
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        AnimatedContainer(
-          duration: Motion.base,
-          curve: Motion.curve,
-          width: Sizes.stepDot + (lit ? 6 : 4),
-          height: Sizes.stepDot + (lit ? 6 : 4),
-          decoration: BoxDecoration(
-            color: done ? (hasError ? p.danger : p.accent) : (active ? p.accentSubtle : null),
-            shape: BoxShape.circle,
-            border: Border.all(color: ring, width: Sizes.strokeStepDot),
-            boxShadow: active && !hasError ? p.accentGlow : const [],
-          ),
-          child: done
-              ? Icon(Icons.check_rounded, size: 11, color: p.onAccent)
-              : null,
+    final state = hasError && active
+        ? 'failed'
+        : done
+            ? 'done'
+            : active
+                ? 'in progress'
+                : 'pending';
+
+    return Semantics(
+      // The dot encodes the state in colour and a tick; without this a screen
+      // reader hears three step names and cannot tell which one is running.
+      label: '$label, $state',
+      child: ExcludeSemantics(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedContainer(
+              duration: Motion.base,
+              curve: Motion.curve,
+              width: Sizes.stepDot + (lit ? 6 : 4),
+              height: Sizes.stepDot + (lit ? 6 : 4),
+              decoration: BoxDecoration(
+                color: done ? (hasError ? p.danger : p.accent) : (active ? p.accentSubtle : null),
+                shape: BoxShape.circle,
+                border: Border.all(color: ring, width: Sizes.strokeStepDot),
+                boxShadow: active && !hasError ? p.accentGlow : const [],
+              ),
+              child: done
+                  ? Icon(Icons.check_rounded, size: 11, color: p.onAccent)
+                  : null,
+            ),
+            const SizedBox(width: Space.s2),
+            AnimatedDefaultTextStyle(
+              duration: Motion.base,
+              style: lit
+                  ? context.t.semi(FontSizes.small)
+                  : context.t.smallMuted,
+              child: Text(label),
+            ),
+          ],
         ),
-        const SizedBox(width: Space.s2),
-        AnimatedDefaultTextStyle(
-          duration: Motion.base,
-          style: lit
-              ? context.t.semi(FontSizes.small)
-              : context.t.smallMuted,
-          child: Text(label),
-        ),
-      ],
+      ),
     );
   }
 }
