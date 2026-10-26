@@ -91,6 +91,9 @@ SECONDARY_CODE_ALREADY_SENT = "codeAlreadySent"
 #: is still worth asking for.
 SECONDARY_SMS_CODE_ALREADY_SENT = "secondaryAuthCodeAlreadySent"
 _AU_SMS = "secondaryAuth"
+#: ``ec`` of ``init`` for an account that wants a newer macOS than the identity claims: "A Mac with
+#: macOS version 10.13 or later is required to sign in with this Apple Account."
+_EC_NEWER_MAC_REQUIRED = -23782
 #: ``au == "repair"`` means the account has no second factor set up; it is not a challenge.
 _AU_NO_SECOND_FACTOR = "repair"
 
@@ -337,6 +340,11 @@ def _gs_request(params: dict[str, Any], headers: dict[str, str]) -> dict[str, An
     return _parse_gs_response(resp)
 
 
+def _init_ec(response: dict[str, Any]) -> Any:
+    status = response.get("Status", response)
+    return status.get("ec", 0) if isinstance(status, dict) else 0
+
+
 def _check(response: dict[str, Any]) -> None:
     status = response.get("Status", response)
     ec = status.get("ec", 0)
@@ -403,9 +411,22 @@ def _authenticate_once(
     usr = srp.User(email, b"", hash_alg=srp.SHA256, ng_type=srp.NG_2048)
     _, a_pub = usr.start_authentication()
 
-    init = _gs_request(
-        {"A2k": a_pub, "ps": ["s2k", "s2k_fo"], "u": email, "o": "init"}, headers
-    )
+    init_params = {"A2k": a_pub, "ps": ["s2k", "s2k_fo"], "u": email, "o": "init"}
+    init = _gs_request(init_params, headers)
+    if _init_ec(init) == _EC_NEWER_MAC_REQUIRED and anisette.use_newer_mac_identity():
+        # The services' Mac identity says macOS 10.12.6 and this account wants 10.13 or later.
+        # Present a newer one and ask again; ``headers`` is updated in place so the rest of this
+        # sign-in (and the token request the caller makes with it) uses the same identity.
+        fresh = anisette.get_headers()
+        headers.clear()
+        headers.update(fresh)
+        init = _gs_request(init_params, headers)
+        if _init_ec(init) == _EC_NEWER_MAC_REQUIRED:
+            raise GsaError(
+                f"Apple error {_EC_NEWER_MAC_REQUIRED}: this Apple Account needs a Mac with macOS "
+                "10.13 or later, and Apple still refused the newer Mac identity iPASide then tried. "
+                "Nothing is wrong with your password."
+            )
     _check(init)
 
     protocol = init.get("sp", "s2k")
@@ -1003,7 +1024,7 @@ def begin_login(email: str, password: str) -> dict[str, Any]:
             method = "trusteddevice"
             notice = (
                 f"{exc} If a code appeared on one of your Apple devices, enter it to finish. "
-                "Otherwise wait a few minutes and sign in again."
+                "If none did, close this and sign in again later."
             )
     _save_pending(email, adsid, idms, method, phone_id=phone_id)
     result: dict[str, Any] = {"status": "2fa_required", "method": method}

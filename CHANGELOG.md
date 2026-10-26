@@ -6,6 +6,28 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.12] - 2026-10-26
+
+### Fixed
+
+- **"Apple's device service is missing" on a Windows that is not in English** (issue #13: Italian
+  Windows, where `sc query` labels the state line `STATO`, so a running Apple Mobile Device Service was
+  read as missing and iPASide told the person to reinstall iTunes). The service state is now asked of
+  the Windows service manager, which has no language; the `sc` fallback reads the state number and
+  name, not the label. Checked against the real service manager and against Italian, German and
+  French `sc` output.
+- **Sign-in failed with Apple error -23782, "A Mac with macOS version 10.13 or later is required"**
+  (issue #14, and many iloader reports): every public anisette service describes a Mac running Mac OS X
+  10.12.6, and for some Apple Accounts Apple now refuses that at the first sign-in step. iPASide now
+  answers that one error by presenting a newer Mac identity (a MacBookPro13,3 on macOS 13.6.7, the
+  same hardware the services report) and asking again, for the rest of that sign-in and afterwards.
+  Accounts that sign in today are not touched, because the newer identity is only used after Apple
+  asks for it. Checked that Apple accepts the identity at the first step; **not checked against an
+  account that actually gets -23782**, so whether it is enough for such an account is still open. If
+  Apple refuses it too, the error now says so instead of repeating Apple's sentence.
+- The message shown with the code box after a refused text message no longer says "wait a few
+  minutes" twice.
+
 ## [1.2.11] - 2026-10-25
 
 ### Fixed

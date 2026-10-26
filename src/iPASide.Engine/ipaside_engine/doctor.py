@@ -11,8 +11,10 @@ Each check returns a status of ``ok``, ``warn`` (degraded / optional), or
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,10 +29,97 @@ WARN = "warn"
 FAIL = "fail"
 
 
+#: ``SERVICE_STATUS.dwCurrentState`` values, by the names ``sc query`` prints for them.
+_SERVICE_STATES = {
+    1: "STOPPED",
+    2: "START_PENDING",
+    3: "STOP_PENDING",
+    4: "RUNNING",
+    5: "CONTINUE_PENDING",
+    6: "PAUSE_PENDING",
+    7: "PAUSED",
+}
+_SC_MANAGER_CONNECT = 0x0001
+_SERVICE_QUERY_STATUS = 0x0004
+_ERROR_SERVICE_DOES_NOT_EXIST = 1060
+
+#: The state line of ``sc query``: a label that Windows translates, then ``4  RUNNING``. Only the
+#: number and the English state name are relied on, and the name must be a known one so the
+#: ``TYPE : 10  WIN32_OWN_PROCESS`` line cannot be mistaken for it.
+_SC_STATE_LINE = re.compile(r"^[^:\r\n]+:\s*(\d+)\s+([A-Z_]+)\s*$", re.MULTILINE)
+
+
+class _ServiceStatus(ctypes.Structure):
+    _fields_ = [
+        ("dwServiceType", ctypes.c_uint32),
+        ("dwCurrentState", ctypes.c_uint32),
+        ("dwControlsAccepted", ctypes.c_uint32),
+        ("dwWin32ExitCode", ctypes.c_uint32),
+        ("dwServiceSpecificExitCode", ctypes.c_uint32),
+        ("dwCheckPoint", ctypes.c_uint32),
+        ("dwWaitHint", ctypes.c_uint32),
+    ]
+
+
+def _service_state_from_api(service_name: str) -> str | None:
+    """The state of a Windows service from the service manager, or ``None`` if it is not installed.
+
+    Raises ``OSError`` when the service manager itself cannot be asked, so the caller can fall
+    back to ``sc`` rather than call an installed service missing.
+    """
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.OpenSCManagerW.restype = ctypes.c_void_p
+    advapi32.OpenSCManagerW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    advapi32.OpenServiceW.restype = ctypes.c_void_p
+    advapi32.OpenServiceW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    advapi32.QueryServiceStatus.restype = ctypes.c_int
+    advapi32.QueryServiceStatus.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ServiceStatus)]
+    advapi32.CloseServiceHandle.restype = ctypes.c_int
+    advapi32.CloseServiceHandle.argtypes = [ctypes.c_void_p]
+
+    manager = advapi32.OpenSCManagerW(None, None, _SC_MANAGER_CONNECT)
+    if not manager:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        service = advapi32.OpenServiceW(manager, service_name, _SERVICE_QUERY_STATUS)
+        if not service:
+            error = ctypes.get_last_error()
+            if error == _ERROR_SERVICE_DOES_NOT_EXIST:
+                return None
+            raise ctypes.WinError(error)
+        try:
+            status = _ServiceStatus()
+            if not advapi32.QueryServiceStatus(service, ctypes.byref(status)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return _SERVICE_STATES.get(status.dwCurrentState)
+        finally:
+            advapi32.CloseServiceHandle(service)
+    finally:
+        advapi32.CloseServiceHandle(manager)
+
+
+def _parse_sc_state(output: str) -> str | None:
+    """The service state in ``sc query`` output, whatever language Windows prints its labels in."""
+    for number, name in _SC_STATE_LINE.findall(output):
+        if _SERVICE_STATES.get(int(number)) == name:
+            return name
+    return None
+
+
 def _windows_service_state(service_name: str) -> str | None:
-    """Return the raw Windows service state (e.g. ``RUNNING``) or ``None``."""
+    """Return the raw Windows service state (e.g. ``RUNNING``) or ``None``.
+
+    Asks the service manager directly, which has no language. Parsing ``sc query`` was how this
+    first worked, and it reported the device service missing on an Italian Windows, where the line
+    is labelled ``STATO`` instead of ``STATE`` (issue #13). ``sc`` is only the fallback now, and
+    reads the numeric code and state name rather than the label.
+    """
     if os.name != "nt":
         return None
+    try:
+        return _service_state_from_api(service_name)
+    except (OSError, AttributeError):
+        pass
     try:
         proc = subprocess.run(
             ["sc", "query", service_name],
@@ -42,13 +131,7 @@ def _windows_service_state(service_name: str) -> str | None:
         return None
     if proc.returncode != 0:
         return None
-    for line in proc.stdout.splitlines():
-        if "STATE" in line:
-            # e.g. "        STATE              : 4  RUNNING"
-            parts = line.split(":", 1)
-            if len(parts) == 2:
-                return parts[1].strip().split()[-1].upper()
-    return None
+    return _parse_sc_state(proc.stdout)
 
 
 def _check_python() -> Check:

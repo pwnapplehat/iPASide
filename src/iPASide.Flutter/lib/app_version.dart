@@ -6,7 +6,7 @@ import 'dart:io';
 /// in a plugin, so it is mirrored here and `test/app_version_test.dart` fails the
 /// build if the two ever drift — a stale value would make the updater compare
 /// against the wrong version and either nag forever or never offer an update.
-const String kAppVersion = '1.2.11';
+const String kAppVersion = '1.2.12';
 
 /// Version the in-app updater compares against.
 ///

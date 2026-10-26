@@ -37,6 +37,7 @@ import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from importlib import metadata
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -542,6 +543,48 @@ PROVIDER_ENV = "IPASIDE_ANISETTE"
 #: Set each time headers are fetched, so the request that follows uses a matching pair.
 _remote_user_agent: str | None = None
 
+#: The Mac identity presented once Apple has said an account needs a newer macOS than the
+#: anisette services report (they all say Mac OS X 10.12.6, and Apple answers ``-23782``, "a Mac
+#: with macOS 10.13 or later is required", for some accounts). It keeps the services' hardware
+#: model and is a combination that exists: a MacBookPro13,3 runs macOS 13. Only used after that
+#: answer, so accounts that sign in today are not touched. See :func:`use_newer_mac_identity`.
+NEWER_MAC_CLIENT_INFO = "<MacBookPro13,3> <macOS;13.6.7;22G720> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+NEWER_MAC_USER_AGENT = "akd/1.0 CFNetwork/1410.1 Darwin/22.6.0"
+_NEWER_MAC_FLAG = "newer-mac-identity"
+_newer_mac_active = False
+
+
+def _newer_mac_flag_path() -> Path:
+    return paths.anisette_dir() / _NEWER_MAC_FLAG
+
+
+def newer_mac_identity_active() -> bool:
+    """True once this install presents the newer Mac identity (in this run, or remembered)."""
+    if _newer_mac_active:
+        return True
+    try:
+        return _newer_mac_flag_path().exists()
+    except OSError:
+        return False
+
+
+def use_newer_mac_identity() -> bool:
+    """Switch to the newer Mac identity because Apple asked for one; True if that changed anything.
+
+    False when it is already in use (asking again would not help) or the local emulator is the
+    provider (its identity is fixed). The choice is remembered across runs, so later developer
+    requests present the same identity the sign-in succeeded with.
+    """
+    global _newer_mac_active
+    if provider_name() != "remote" or newer_mac_identity_active():
+        return False
+    _newer_mac_active = True
+    try:
+        _newer_mac_flag_path().write_text("1", encoding="utf-8")
+    except OSError:
+        pass  # still in force for this run
+    return True
+
 
 def provider_name() -> str:
     return "local" if os.environ.get(PROVIDER_ENV, "").strip().lower() == "local" else "remote"
@@ -561,8 +604,10 @@ def get_headers() -> dict[str, Any]:
     from . import anisette_remote
 
     fetched = anisette_remote.fetch()
-    _remote_user_agent = fetched.identity.user_agent
-    return _wire_safe_headers(fetched.headers, client_info=fetched.identity.client_info)
+    client_info, _remote_user_agent = fetched.identity.client_info, fetched.identity.user_agent
+    if newer_mac_identity_active():
+        client_info, _remote_user_agent = NEWER_MAC_CLIENT_INFO, NEWER_MAC_USER_AGENT
+    return _wire_safe_headers(fetched.headers, client_info=client_info)
 
 
 def status() -> dict[str, Any]:
@@ -588,4 +633,5 @@ def status() -> dict[str, Any]:
         "package_version": version,
         "state_cached": state.exists(),
         "state_path": str(state),
+        "newer_mac_identity": provider == "remote" and newer_mac_identity_active(),
     }
