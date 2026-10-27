@@ -6,6 +6,8 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.13] - 2026-10-27
+
 ### Fixed
 
 - **The app could only be read with a screen reader by object navigation.** Every control is a
@@ -21,6 +23,12 @@ All notable changes to iPASide are documented here. This project adheres to
   nav rail and then the screen instead of bouncing between them, dialogs announce their title, and
   install progress announces each step. Checked with NVDA on the built app: tab order, activation,
   checkbox and switch state, option chips, text fields, and the selected-screen announcement.
+  Contributed by @serrebidev (#15). The dialogs' Enter and Escape shortcuts were checked against the
+  new focusable buttons: Enter or Space on a focused Cancel cancels, Enter on a focused Confirm
+  confirms once, and the dialog's own Enter still confirms when nothing else has focus.
+- **A build without `vendor\zsign.exe` now stops** instead of producing an installer that installs and
+  starts fine and then fails every sideload with "zsign not found". The message says how to build the
+  binary. CI is unaffected, since it builds zsign first. Contributed by @serrebidev (#16).
 
 ## [1.2.12] - 2026-10-26
 
