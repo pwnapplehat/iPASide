@@ -83,6 +83,11 @@ Write-Host "== Installing runtime dependencies =="
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 Write-Host "== Copying engine package =="
+# zsign.exe is git-ignored, so a fresh checkout has none. Without it the app installs
+# and starts fine but every sideload fails with "zsign not found".
+if (-not (Test-Path "src\iPASide.Engine\ipaside_engine\vendor\zsign.exe")) {
+    throw "vendor\zsign.exe missing. Build it first from MSYS2 MINGW64: bash tools/zsign/build-zsign.sh"
+}
 Copy-Item "src\iPASide.Engine\ipaside_engine" "$site\ipaside_engine" -Recurse -Force
 Get-ChildItem "$site\ipaside_engine" -Recurse -Directory -Filter __pycache__ |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
