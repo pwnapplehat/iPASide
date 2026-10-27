@@ -154,6 +154,7 @@ class _DeviceSection extends StatelessWidget {
             selected: devices.connection,
             labelOf: (DeviceConnection choice) => choice.label,
             onSelect: devices.setConnection,
+            groupLabel: 'Connection',
           ),
         ),
         if (target != null)
@@ -325,6 +326,9 @@ class _AutoRefreshSection extends StatelessWidget {
             control: AppToggle(
               value: vm.autoRefreshEnabled,
               onChanged: vm.autoRefreshBusy ? null : vm.setAutoRefreshEnabled,
+              // The row's title is drawn to the left of the switch, not inside
+              // it, so the switch needs the name passed explicitly.
+              semanticsLabel: 'Enable daily background auto-refresh',
             ),
             detail: vm.hasAutoRefreshMessage
                 ? SettingsStatusLine(
@@ -357,6 +361,7 @@ class _SignedIpaSection extends StatelessWidget {
             control: AppToggle(
               value: vm.keepSignedIpa,
               onChanged: vm.setKeepSignedIpa,
+              semanticsLabel: 'Keep the signed IPA after installing',
             ),
           ),
           SettingsRow(

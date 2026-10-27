@@ -49,15 +49,22 @@ class Sidebar extends StatelessWidget {
         children: [
           Padding(
             padding: Pad.sidebarList,
-            child: Column(
-              children: [
-                for (final destination in NavDestination.sidebar)
-                  _SidebarItem(
-                    destination: destination,
-                    selected: destination.key == selected,
-                    onTap: () => onSelect(destination.key),
-                  ),
-              ],
+            // One group, so Tab walks the whole nav before it steps into the
+            // page. Without it traversal follows reading order across the
+            // window, which interleaves the rail with the screen beside it —
+            // Tab from "LiveContainer" lands on a card, then back on
+            // "Jailbreak".
+            child: FocusTraversalGroup(
+              child: Column(
+                children: [
+                  for (final destination in NavDestination.sidebar)
+                    _SidebarItem(
+                      destination: destination,
+                      selected: destination.key == selected,
+                      onTap: () => onSelect(destination.key),
+                    ),
+                ],
+              ),
             ),
           ),
           const Spacer(),
@@ -112,6 +119,8 @@ class _SidebarItem extends StatelessWidget {
       child: Hoverable(
         onTap: onTap,
         pressScale: 1,
+        // Current screen announced as selected rather than by colour alone.
+        selected: selected,
         builder: (hovered, pressed) => AnimatedContainer(
           duration: Motion.fast,
           curve: Motion.curve,

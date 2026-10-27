@@ -73,6 +73,7 @@ class DeviceTargetRow extends StatelessWidget {
     return Hoverable(
       onTap: onTap,
       pressScale: 1,
+      selected: selected,
       builder: (bool hovered, bool pressed) => AnimatedContainer(
         duration: Motion.fast,
         curve: Motion.curve,
@@ -388,6 +389,7 @@ class _DeviceChoiceChip extends StatelessWidget {
       onTap: onTap,
       pressScale: 0.98,
       tooltip: device.udid,
+      selected: selected,
       builder: (bool hovered, bool pressed) => AnimatedContainer(
         duration: Motion.fast,
         curve: Motion.curve,

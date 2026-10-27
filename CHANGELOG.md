@@ -6,6 +6,22 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **The app could only be read with a screen reader by object navigation.** Every control is a
+  custom-painted card or button over a bare gesture recogniser, so it had no role and no focus node:
+  NVDA could find the text inside a button but Tab never reached it, and nothing said whether a
+  checkbox was checked or which screen the sidebar had selected. The shared `Hoverable` now gives each
+  control one merged node with a name, a role (button, checkbox, switch, selected option) and its
+  state, an Enter/Space activation handler, and a focus node; keyboard focus reuses the hover
+  treatment so it is visible. Checkboxes and switches keep focus when they go busy instead of dropping
+  the user's place mid-action, and a collapsed "Advanced options" panel no longer leaves its controls
+  readable or in the tab order. Text fields carry the label drawn above them, icon-only buttons take
+  their name from their tooltip, the sidebar and the page are separate focus groups so Tab walks the
+  nav rail and then the screen instead of bouncing between them, dialogs announce their title, and
+  install progress announces each step. Checked with NVDA on the built app: tab order, activation,
+  checkbox and switch state, option chips, text fields, and the selected-screen announcement.
+
 ## [1.2.12] - 2026-10-26
 
 ### Fixed

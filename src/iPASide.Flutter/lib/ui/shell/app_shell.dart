@@ -165,14 +165,19 @@ class _AppShellState extends State<AppShell> {
                           // that, one level up. One opacity layer per card,
                           // retired the moment it reaches rest, and none over
                           // the page.
-                          child: KeyedSubtree(
-                            // The epoch remounts the screen even when the
-                            // destination is unchanged, so re-navigating
-                            // reloads it the way the previous build did.
-                            key: ValueKey(
-                              '${navigation.current.wireName}#${navigation.epoch}',
+                          child: FocusTraversalGroup(
+                            // The screen is its own group, so Tab visits the
+                            // whole nav rail and then the whole page rather
+                            // than bouncing between them by position.
+                            child: KeyedSubtree(
+                              // The epoch remounts the screen even when the
+                              // destination is unchanged, so re-navigating
+                              // reloads it the way the previous build did.
+                              key: ValueKey(
+                                '${navigation.current.wireName}#${navigation.epoch}',
+                              ),
+                              child: _pageFor(navigation.current),
                             ),
-                            child: _pageFor(navigation.current),
                           ),
                         ),
                       ],

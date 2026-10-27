@@ -72,9 +72,15 @@ class AppTextField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label!, style: context.t.smallMuted),
+        // The label is drawn above the field but belongs *to* the field: naming
+        // the field is what lets a screen reader say what is being edited, and
+        // leaving the text readable as well would read it twice.
+        ExcludeSemantics(child: Text(label!, style: context.t.smallMuted)),
         const SizedBox(height: Space.s2 - 1),
-        field,
+        // Merged, not merely wrapped: an editable field is its own semantics
+        // boundary, so a label on a parent node would be announced separately
+        // from the field it names.
+        MergeSemantics(child: Semantics(label: label, child: field)),
       ],
     );
   }
@@ -103,6 +109,10 @@ class AppCheckbox extends StatelessWidget {
       child: Hoverable(
         onTap: enabled ? () => onChanged!(!value) : null,
         pressScale: 1,
+        // Announces as a checkbox with its state, not as a button; the visible
+        // label is read as part of the same control.
+        isButton: false,
+        checked: value,
         builder: (hovered, _) => Row(
           children: [
             AnimatedContainer(
@@ -154,11 +164,18 @@ class AppToggle extends StatelessWidget {
     required this.value,
     this.onChanged,
     this.label,
+    this.semanticsLabel,
   });
 
   final bool value;
   final ValueChanged<bool>? onChanged;
+
+  /// Text drawn beside the switch. When the switch has no drawn label — a
+  /// settings row puts the title to its left — use [semanticsLabel] instead.
   final String? label;
+
+  /// Name read by a screen reader when [label] is null.
+  final String? semanticsLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -168,6 +185,9 @@ class AppToggle extends StatelessWidget {
     final control = Hoverable(
       onTap: enabled ? () => onChanged!(!value) : null,
       pressScale: 1,
+      isButton: false,
+      toggled: value,
+      semanticsLabel: label == null ? semanticsLabel : null,
       builder: (hovered, _) => AnimatedContainer(
         duration: Motion.base,
         curve: Motion.curve,
@@ -228,6 +248,7 @@ class AppChoiceChips<T> extends StatelessWidget {
     required this.selected,
     required this.labelOf,
     required this.onSelect,
+    this.groupLabel,
   });
 
   /// Every option, in the order shown.
@@ -242,6 +263,11 @@ class AppChoiceChips<T> extends StatelessWidget {
   /// Called with the option the user picked; not called for the current one.
   final ValueChanged<T> onSelect;
 
+  /// What the choice is about, read before each caption — the settings row's
+  /// title, so a screen reader hears "Connection: USB" rather than a bare
+  /// "USB" out of context.
+  final String? groupLabel;
+
   @override
   Widget build(BuildContext context) => Wrap(
         spacing: Space.s2,
@@ -251,18 +277,31 @@ class AppChoiceChips<T> extends StatelessWidget {
             _Chip(
               label: labelOf(choice),
               selected: choice == selected,
-              onTap: choice == selected ? null : () => onSelect(choice),
+              // The current choice stays focusable so a keyboard user can hear
+              // which one it is; picking it again simply does nothing.
+              onTap: () {
+                if (choice != selected) onSelect(choice);
+              },
+              semanticsLabel: groupLabel == null
+                  ? null
+                  : '$groupLabel: ${labelOf(choice)}',
             ),
         ],
       );
 }
 
 class _Chip extends StatelessWidget {
-  const _Chip({required this.label, required this.selected, this.onTap});
+  const _Chip({
+    required this.label,
+    required this.selected,
+    this.onTap,
+    this.semanticsLabel,
+  });
 
   final String label;
   final bool selected;
   final VoidCallback? onTap;
+  final String? semanticsLabel;
 
   @override
   Widget build(BuildContext context) {
@@ -271,6 +310,8 @@ class _Chip extends StatelessWidget {
     return Hoverable(
       onTap: onTap,
       pressScale: 0.98,
+      selected: selected,
+      semanticsLabel: semanticsLabel,
       builder: (bool hovered, bool pressed) => AnimatedContainer(
         duration: Motion.fast,
         curve: Motion.curve,
