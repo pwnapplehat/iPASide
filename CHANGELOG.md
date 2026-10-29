@@ -6,6 +6,19 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.2.14] - 2026-10-29
+
+### Fixed
+
+- **"You already have a current iOS Development certificate or a pending certificate request" (Apple
+  error 7460) now explains itself** (issue #14). On a free Apple ID that already holds development
+  certificates made by other tools (an `iloader` one and another, in the report), Apple refuses to issue
+  a new one for iPASide, and its sentence reads as if iPASide had made the existing one. The message now
+  names the other certificates, says that iPASide never revokes a certificate it did not create (that
+  would stop every app it signed from opening), and says how to continue: revoke one of them on the
+  Account page, accepting that the apps it signed stop opening until the tool that made it signs them
+  again. Nothing is revoked automatically, as before.
+
 ## [1.2.13] - 2026-10-27
 
 ### Fixed

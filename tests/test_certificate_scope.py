@@ -185,6 +185,78 @@ def test_a_failed_revocation_explains_a_failed_request(portal):
     assert fake.machine_names, "the request should still have been attempted"
 
 
+# Apple's own sentence for the limit says "you already have a current certificate", which reads
+# as if iPASide had made one. On a free account holding two other tools' certificates it had not
+# (GitHub issue #14): the message must name them and say how to get out.
+LIMIT_TEXT = "You already have a current iOS Development certificate or a pending certificate request."
+ILOADER = {"serialNumber": "AAAA01", "machineName": "iloader", "name": "iOS Development: Someone"}
+CUSTOM = {"serialNumber": "BBBB02", "machineName": "Work laptop", "name": "iOS Development: Someone"}
+
+
+def test_the_certificate_limit_names_the_other_tools_and_says_how_to_continue(portal):
+    fake = portal([ILOADER, CUSTOM], csr_error=developer.DeveloperServicesError(f"7460: {LIMIT_TEXT}"))
+
+    with pytest.raises(gsa.GsaError) as excinfo:
+        provision._ensure_certificate(TEAM, None)
+
+    message = str(excinfo.value)
+    assert "iloader" in message and "Work laptop" in message
+    assert "Account page" in message and "revoke one of them" in message
+    assert "never revokes a certificate it did not create" in message
+    assert "stop opening" in message, "say what revoking costs"
+    assert LIMIT_TEXT in message, "Apple's own words stay in it"
+    assert fake.revoked == [], "another tool's certificate must still be left alone"
+
+
+def test_the_limit_is_recognised_by_apples_words_when_the_code_is_missing(portal):
+    portal([ILOADER], csr_error=developer.DeveloperServicesError(LIMIT_TEXT))
+
+    with pytest.raises(gsa.GsaError, match="revoke one of them"):
+        provision._ensure_certificate(TEAM, None)
+
+
+def test_the_limit_after_our_own_certificate_was_revoked_still_names_the_others(portal):
+    fake = portal([OURS, ILOADER], csr_error=developer.DeveloperServicesError(f"7460: {LIMIT_TEXT}"))
+
+    with pytest.raises(gsa.GsaError) as excinfo:
+        provision._ensure_certificate(TEAM, None)
+
+    message = str(excinfo.value)
+    assert "(iloader)" in message, "only the other tool is listed; our own certificate is not 'another tool'"
+    assert fake.revoked == [OURS["serialNumber"]]
+
+
+def test_an_unnamed_certificate_is_still_reported(portal):
+    portal([{"serialNumber": "NONAME01"}], csr_error=developer.DeveloperServicesError("7460: limit"))
+
+    with pytest.raises(gsa.GsaError, match="an unnamed certificate"):
+        provision._ensure_certificate(TEAM, None)
+
+
+def test_each_other_tool_is_named_once(portal):
+    twin = dict(ILOADER, serialNumber="AAAA02")
+    portal([ILOADER, twin], csr_error=developer.DeveloperServicesError("7460: limit"))
+
+    with pytest.raises(gsa.GsaError) as excinfo:
+        provision._ensure_certificate(TEAM, None)
+
+    assert str(excinfo.value).count("iloader") == 1
+
+
+def test_the_limit_with_nothing_else_on_the_account_is_reported_as_apple_put_it(portal):
+    portal([], csr_error=developer.DeveloperServicesError(f"7460: {LIMIT_TEXT}"))
+
+    with pytest.raises(developer.DeveloperServicesError, match="already have a current"):
+        provision._ensure_certificate(TEAM, None)
+
+
+def test_another_refusal_is_not_blamed_on_other_tools_certificates(portal):
+    portal([ILOADER], csr_error=developer.DeveloperServicesError("3004: something else entirely"))
+
+    with pytest.raises(developer.DeveloperServicesError, match="something else entirely"):
+        provision._ensure_certificate(TEAM, None)
+
+
 def test_a_failed_request_alone_is_reported_as_apple_put_it(portal):
     """With nothing else to add, Apple's own message is the most useful one."""
     portal([], csr_error=developer.DeveloperServicesError("7460: something else"))

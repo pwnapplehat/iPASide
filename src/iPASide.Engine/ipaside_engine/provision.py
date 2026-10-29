@@ -147,6 +147,24 @@ def _find_cert_for_key(certs: list[dict[str, Any]], key_pem: bytes) -> tuple[byt
     return None, None
 
 
+def _is_certificate_limit(exc: Exception) -> bool:
+    """True for Apple's "you already have a current certificate" refusal (error 7460)."""
+    text = str(exc)
+    return text.startswith("7460") or "already have a current" in text.lower()
+
+
+def _foreign_certificate_names(certs: list[dict[str, Any]]) -> list[str]:
+    """The machine names of the certificates on the team that iPASide did not create."""
+    names: list[str] = []
+    for cert in certs:
+        if cert.get("machineName") == CERTIFICATE_MACHINE_NAME:
+            continue
+        name = str(cert.get("machineName") or "").strip() or "an unnamed certificate"
+        if name not in names:
+            names.append(name)
+    return names
+
+
 def _ensure_certificate(team_id: str, account_slug: str | None) -> tuple[bytes, bytes, str]:
     """Return (private_key_pem, certificate_der, serial), creating one if needed.
 
@@ -197,6 +215,19 @@ def _ensure_certificate(team_id: str, account_slug: str | None) -> tuple[bytes, 
                 f"iPASide certificate could not be revoked to make room for it "
                 f"({revoke_failure}). Revoking it in the Apple Developer portal, under "
                 "Certificates, will let this succeed."
+            ) from exc
+        others = _foreign_certificate_names(server_certs)
+        if _is_certificate_limit(exc) and others:
+            # Apple's limit is full of certificates that belong to other tools. Say so, and say
+            # what the way out costs, instead of repeating Apple's sentence about "a current
+            # certificate", which reads as if iPASide had made one.
+            raise gsa.GsaError(
+                f"Apple would not issue a signing certificate for iPASide ({exc}). This Apple ID "
+                f"already holds development certificates that other tools made "
+                f"({', '.join(others)}). iPASide never revokes a certificate it did not create, "
+                "because that stops every app the certificate signed from opening. To continue, "
+                "open the Account page, revoke one of them (the apps it signed stop opening "
+                "until the tool that made it signs them again), then try again."
             ) from exc
         raise
     # Match the freshly-issued certificate to our key by public key (robust: the
