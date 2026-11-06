@@ -363,6 +363,9 @@ def create_remote_pairing(
         return report
 
     rp_keys = _remote_pair_keys(udid, serial)
+    # Diagnostic-only -- see `_remote_pair_keys`'s own comment. Must come out before
+    # `rp_keys` is merged into the plist that actually gets written to disk.
+    wifi_sync_enabled = rp_keys.pop("_wifi_sync_enabled", None)
     lockdown = _load_lockdown(udid, directory)
     lockdown.setdefault("UDID", udid)
     merged = {**lockdown, **rp_keys}
@@ -372,6 +375,7 @@ def create_remote_pairing(
     report = inspect_record(udid, lockdown_dir=directory)
     report["created"] = True
     report["path"] = str(stored)
+    report["wifi_sync_enabled"] = wifi_sync_enabled
     return report
 
 
@@ -421,10 +425,24 @@ def _remote_pair_keys(udid: str, serial: str | None = None) -> dict[str, Any]:
     from . import lockdown as lockdown_mod
     from ._asyncutil import run
 
-    async def _pair() -> dict[str, Any]:
+    async def _pair() -> tuple[dict[str, Any], bool]:
         client = await lockdown_mod.create(serial or udid, prefer_usb=True)
         service = None
         try:
+            # Best-effort, on the SAME already-trusted USB session -- lets a device
+            # exported this way also be reachable over classic lockdown (iOS 15/16,
+            # which has no Remote Pairing at all) via the old Wi-Fi Sync mechanism,
+            # without a second USB connection or a second Trust dialog. Deliberately
+            # does not fail the whole pairing over this: Remote Pairing export (the
+            # part every existing consumer actually depends on today) must still
+            # succeed even if this one extra call doesn't.
+            wifi_sync_enabled = False
+            try:
+                await client.set_enable_wifi_connections(True)
+                wifi_sync_enabled = True
+            except Exception:  # noqa: BLE001 - best-effort, see above
+                pass
+
             service = await RemotePairingLockdownService.create(client)
             try:
                 await service.connect(autopair=True)
@@ -440,14 +458,14 @@ def _remote_pair_keys(udid: str, serial: str | None = None) -> dict[str, Any]:
             parsed = plistlib.loads(path.read_bytes())
             if not isinstance(parsed, dict):
                 raise PairingError(f"The Remote Pairing record at {path} is not a dictionary.")
-            return parsed
+            return parsed, wifi_sync_enabled
         finally:
             if service is not None:
                 await service.close()
             await lockdown_mod.close(client)
 
     try:
-        parsed = run(_pair())
+        parsed, wifi_sync_enabled = run(_pair())
     except PairingError:
         raise
     except Exception as exc:  # noqa: BLE001 - surface as pairing, not a traceback
@@ -471,6 +489,10 @@ def _remote_pair_keys(udid: str, serial: str | None = None) -> dict[str, Any]:
     alt = parsed.get("alt_irk")
     if alt:
         keys["alt_irk"] = alt
+    # Underscore-prefixed and popped back off by `create_remote_pairing` before the
+    # merged dict is written to the exported plist -- a diagnostic signal for the
+    # caller, not a real pairing field, so it must never end up in the actual file.
+    keys["_wifi_sync_enabled"] = wifi_sync_enabled
     return keys
 
 
