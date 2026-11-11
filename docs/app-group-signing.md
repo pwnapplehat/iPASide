@@ -51,4 +51,4 @@ There is no EscapeOS-only signing profile in iPASide. An earlier draft registere
 
 Passing `-e` with only the group list is intentionally not done. That flag replaces the profile entitlements, including `application-identifier` and `get-task-allow`.
 
-This change is in the engine source. It is not a new iPASide installer release. A copy of iPASide installed from an older GitHub release does not contain it. Sideload EscapeOS 0.3.0 with a build that includes this engine.
+This change ships in iPASide 1.2.15. An older installer does not keep App Groups from the IPA.

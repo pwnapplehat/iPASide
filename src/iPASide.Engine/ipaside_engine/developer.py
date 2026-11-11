@@ -14,6 +14,7 @@ Apple CA bundle.
 from __future__ import annotations
 
 import plistlib
+import unicodedata
 import uuid
 from typing import Any
 
@@ -90,9 +91,18 @@ def list_teams() -> list[dict[str, Any]]:
 
 
 def _sanitize_name(name: str) -> str:
-    """Apple requires App ID / device names to be alphanumeric + spaces."""
-    cleaned = "".join(ch for ch in name if ch.isalnum() or ch == " ").strip()
-    return cleaned or "iPASide"
+    """Apple App ID and device names accept ASCII letters, digits, and spaces.
+
+    ``appIdName`` rejects anything else. ``str.isalnum`` treats ``é`` as a
+    letter, so ``Pokémon GO`` was sent unchanged and Apple answered result
+    code 35. Decompose first so ``é`` becomes ``e`` plus a mark, then drop
+    the mark. The name on the phone is unchanged; only the portal label is.
+    """
+    folded = unicodedata.normalize("NFKD", name)
+    ascii_name = folded.encode("ascii", "ignore").decode("ascii")
+    cleaned = "".join(ch for ch in ascii_name if ch.isascii() and (ch.isalnum() or ch == " "))
+    cleaned = " ".join(cleaned.split())
+    return (cleaned[:50] or "iPASide")
 
 
 # --------------------------------------------------------------------------- #

@@ -4,11 +4,12 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.2.15] - 2026-11-11
 
 ### Changed
 
 - **Signing keeps App Groups that are already in the IPA.** Before the provisioning profile is downloaded, iPASide reads `com.apple.security.application-groups` from the main executable's signature and registers those `group.*` identifiers on the App ID. The profile Apple returns then includes them, and zsign signs with that profile. Groups required by a named signing profile (LiveContainer) are kept and merged with the IPA's groups. See `docs/app-group-signing.md`.
+- **App names with accents can be signed** (issue #17). Apple rejects an App ID name such as `Pokémon GO` (result code 35, `appIdName`). The name sent to Apple is now plain ASCII (`Pokemon GO`). The name on the iPhone is unchanged.
 
 ## [1.2.14] - 2026-10-29
 
