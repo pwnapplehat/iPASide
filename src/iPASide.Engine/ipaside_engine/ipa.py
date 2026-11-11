@@ -20,6 +20,7 @@ import re
 import shutil
 import struct
 import tempfile
+import xml.parsers.expat
 import zipfile
 import zlib
 from pathlib import Path
@@ -391,6 +392,66 @@ def inspect(ipa_path: str) -> dict[str, Any]:
         "extensions": extensions,
         "has_watch_app": has_watch,
     }
+
+
+_APP_GROUPS_KEY = "com.apple.security.application-groups"
+
+
+def app_group_identifiers(ipa_path: str) -> list[str]:
+    """App Group identifiers embedded in the main executable's signature.
+
+    A free provisioning profile only grants a group after that group is registered
+    on the App ID. The signer has to read these before it asks Apple for the
+    profile, or the signed app loses them.
+    """
+    name = Path(ipa_path).name or ipa_path
+    try:
+        with zipfile.ZipFile(ipa_path) as zf:
+            names = zf.namelist()
+            app = _app_relpath(names, name)
+            info = plistlib.loads(zf.read(f"{app}/Info.plist"))
+            executable = info.get("CFBundleExecutable")
+            if not isinstance(executable, str) or "/" in executable or "\\" in executable:
+                return []
+            entry = f"{app}/{executable}"
+            if entry not in names:
+                return []
+            data = zf.read(entry)
+    except (IpaError, FileNotFoundError, zipfile.BadZipFile, plistlib.InvalidFileException, zlib.error, OSError):
+        return []
+    return _groups_in_signature(data)
+
+
+def _groups_in_signature(data: bytes) -> list[str]:
+    """Pull `group.*` identifiers out of an entitlements plist stored in a binary.
+
+    The signature also contains other plists, so the blob is the XML document that
+    actually holds the App Group key, not the first `<?xml` in the file.
+    """
+    groups: list[str] = []
+    needle = _APP_GROUPS_KEY.encode()
+    pos = 0
+    while True:
+        at = data.find(needle, pos)
+        if at < 0:
+            break
+        pos = at + len(needle)
+        start = data.rfind(b"<?xml", 0, at)
+        end = data.find(b"</plist>", at)
+        if start < 0 or end < 0:
+            continue
+        blob = data[start:end + len(b"</plist>")]
+        try:
+            parsed = plistlib.loads(blob)
+        except (plistlib.InvalidFileException, ValueError, xml.parsers.expat.ExpatError):
+            continue
+        raw = parsed.get(_APP_GROUPS_KEY) if isinstance(parsed, dict) else None
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, str) and item.startswith("group.") and item not in groups:
+                groups.append(item)
+    return groups
 
 
 # What an app says it runs on. `CFBundleSupportedPlatforms` is the direct statement;

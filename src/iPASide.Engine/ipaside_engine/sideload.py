@@ -389,6 +389,14 @@ def run_sideload(
             profile, developer.list_teams()[0]["teamId"], target_bundle_id
         )
 
+    # Keep every App Group the IPA already carries. The profile Apple returns
+    # only lists groups registered on this App ID, and zsign signs with that
+    # profile. Reading them here, for every app, is what makes a later sign
+    # keep the entitlement instead of dropping it.
+    for group in ipa_module.app_group_identifiers(ipa_path):
+        if group not in app_groups:
+            app_groups.append(group)
+
     bundle = provision.ensure_signing_assets(
         target_bundle_id, udid, app_name=app_name,
         on_step=lambda message: progress("provision", None, message),

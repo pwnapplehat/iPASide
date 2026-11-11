@@ -103,3 +103,24 @@ def test_normalize_cgbi_unpremultiplies_correctly():
     assert abs(pixels[1] - 100) <= 2
     assert abs(pixels[2] - 50) <= 2
     assert pixels[3] == 128
+
+
+def test_app_group_identifiers_are_read_from_the_signature(tmp_path):
+    import plistlib
+
+    entitlements = plistlib.dumps({
+        "com.apple.security.application-groups": [
+            "group.com.ipaside.escapeos",
+            "not-a-group",
+            "group.com.ipaside.escapeos",
+        ],
+    })
+    binary = b"\xca\xfe\xba\xbe" + b"\x00" * 32 + entitlements + b"\x00trailing"
+    path = make_ipa(tmp_path / "grouped.ipa", executable=binary)
+
+    assert ipa.app_group_identifiers(str(path)) == ["group.com.ipaside.escapeos"]
+
+
+def test_an_ipa_without_a_group_reports_none(tmp_path):
+    path = make_ipa(tmp_path / "plain.ipa")
+    assert ipa.app_group_identifiers(str(path)) == []

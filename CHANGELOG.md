@@ -6,6 +6,10 @@ All notable changes to iPASide are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **Signing keeps App Groups that are already in the IPA.** Before the provisioning profile is downloaded, iPASide reads `com.apple.security.application-groups` from the main executable's signature and registers those `group.*` identifiers on the App ID. The profile Apple returns then includes them, and zsign signs with that profile. Groups required by a named signing profile (LiveContainer) are kept and merged with the IPA's groups. See `docs/app-group-signing.md`.
+
 ## [1.2.14] - 2026-10-29
 
 ### Fixed
