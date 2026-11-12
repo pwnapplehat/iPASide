@@ -183,27 +183,37 @@ class _SideloadViewState extends State<SideloadView> {
             // target wrong writes to the wrong phone.
             Entrance(
               index: 3,
-              child: DeviceTargetBar(selection: context.watch<DeviceSelection>()),
+              child: vm.exportOnly
+                  ? const SizedBox.shrink()
+                  : DeviceTargetBar(
+                      selection: context.watch<DeviceSelection>(),
+                    ),
             ),
             const SizedBox(height: Space.s4),
             Entrance(
               index: 4,
               child: AppButton(
-                label: 'Sideload to iPhone',
-                icon: Icons.download_rounded,
+                label: vm.actionLabel,
+                icon: vm.exportOnly
+                    ? Icons.ios_share_rounded
+                    : Icons.download_rounded,
                 tone: ButtonTone.primary,
                 busy: vm.isRunning,
                 // Held shut while Apple's service is down, with the banner above
                 // saying why and offering the fix: an install cannot reach a phone
                 // at all in that state, and letting it start would replace a fixable
                 // explanation with a usbmux error.
-                onPressed:
-                    vm.isRunning || apple.blocksDevices ? null : vm.sideload,
-                tooltip: apple.blocksDevices
-                    ? apple.usbBlockedReason
-                    : vm.isRunning
-                        ? 'A sideload is already running'
-                        : null,
+                onPressed: vm.isRunning ||
+                        (!vm.exportOnly && apple.blocksDevices)
+                    ? null
+                    : vm.sideload,
+                tooltip: vm.exportOnly
+                    ? (vm.isRunning ? 'An export is already running' : null)
+                    : apple.blocksDevices
+                        ? apple.usbBlockedReason
+                        : vm.isRunning
+                            ? 'A sideload is already running'
+                            : null,
               ),
             ),
             if (vm.showStepper) ...[
@@ -224,7 +234,8 @@ class _SideloadViewState extends State<SideloadView> {
               Alert(
                 kind: AlertKind.success,
                 title: vm.successTitle,
-                body: _TrustHint(),
+                message: vm.exportMessage,
+                body: vm.exportMessage == null ? _TrustHint() : null,
               ),
             ],
             if (vm.isUnexpected) ...[
@@ -238,7 +249,7 @@ class _SideloadViewState extends State<SideloadView> {
               const SizedBox(height: Space.s4),
               Alert(
                 kind: AlertKind.danger,
-                title: 'Sideload failed',
+                title: vm.failureTitle,
                 message: vm.failureMessage,
               ),
             ],
@@ -407,10 +418,29 @@ class _AdvancedSectionState extends State<_AdvancedSection> {
               ),
               const SizedBox(height: Space.s4),
               AppCheckbox(
-                label: 'Remove app extensions',
+                label: 'Remove all extensions',
                 value: vm.removeExtensions,
                 onChanged: (value) => vm.removeExtensions = value,
               ),
+              if (!vm.removeExtensions && vm.availableExtensions.isNotEmpty) ...[
+                const SizedBox(height: Space.s2),
+                Text(
+                  'Kept extensions stay in the IPA and are signed with this app\'s profile. '
+                  'A free Apple ID can still refuse an extension.',
+                  style: context.t.smallMuted,
+                ),
+                for (final String extension in vm.availableExtensions)
+                  AppCheckbox(
+                    label: 'Keep $extension',
+                    value: vm.keepsExtension(extension),
+                    onChanged: (value) => vm.setExtensionKept(extension, value),
+                  ),
+                AppCheckbox(
+                  label: 'Own App ID for each kept extension',
+                  value: vm.ownExtensionAppIds,
+                  onChanged: (value) => vm.ownExtensionAppIds = value,
+                ),
+              ],
               AppCheckbox(
                 label: 'Remove device restrictions',
                 value: vm.removeDeviceRestrictions,
@@ -420,6 +450,17 @@ class _AdvancedSectionState extends State<_AdvancedSection> {
                 label: 'Enable file sharing (Files app)',
                 value: vm.enableFileSharing,
                 onChanged: (value) => vm.enableFileSharing = value,
+              ),
+              const SizedBox(height: Space.s3),
+              AppCheckbox(
+                label: 'Export unsigned IPA only',
+                value: vm.exportOnly,
+                onChanged: (value) => vm.exportOnly = value,
+              ),
+              Text(
+                'Applies these options and tweaks, then saves an unsigned .ipa. '
+                'No Apple ID, device, or certificate. Sign and install it with another tool.',
+                style: context.t.smallMuted,
               ),
               const SizedBox(height: Space.s4),
               Container(height: Sizes.hairline, color: context.palette.hairline),
@@ -446,6 +487,11 @@ class _AdvancedSectionState extends State<_AdvancedSection> {
                   label: 'Inject as weak references',
                   value: vm.weakDylibs,
                   onChanged: (value) => vm.weakDylibs = value,
+                ),
+                AppCheckbox(
+                  label: 'Use ElleKit instead of CydiaSubstrate',
+                  value: vm.useEllekit,
+                  onChanged: (value) => vm.useEllekit = value,
                 ),
               ],
               const SizedBox(height: Space.s3),

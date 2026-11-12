@@ -17,12 +17,16 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import shutil
 from typing import Any, Callable
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 
 from . import developer, gsa, paths, signing
+
+log = logging.getLogger(__name__)
 
 _CERT_CACHE = "certificate.json"
 _BUNDLE_CACHE = "bundle.json"
@@ -103,9 +107,23 @@ def team_scoped_bundle_id(base_bundle_id: str) -> str:
     and always registerable, which is why every free-account signing flow does it.
     """
     team_id = developer.list_teams()[0]["teamId"]
-    if base_bundle_id.lower().endswith("." + team_id.lower()):
-        return base_bundle_id
-    return f"{base_bundle_id}.{team_id}"
+    return _with_team_suffix(base_bundle_id, team_id)
+
+
+def team_scoped_app_group_identifier(identifier: str, team_id: str) -> str:
+    """A ``group.*`` id this team can register when another team already holds the literal one.
+
+    App Group identifiers are unique across every Apple Developer team. The
+    literal string is still what an app and its extension expect, so this is
+    only a fallback after Apple has refused that string.
+    """
+    return _with_team_suffix(identifier, team_id)
+
+
+def _with_team_suffix(identifier: str, team_id: str) -> str:
+    if identifier.lower().endswith("." + team_id.lower()):
+        return identifier
+    return f"{identifier}.{team_id}"
 
 
 def _normalize_udid(udid: str) -> str:
@@ -261,6 +279,21 @@ def _ensure_device(team_id: str, udid: str, name: str) -> None:
             raise
 
 
+def scoped_extension_bundle_id(original_app: str, scoped_app: str, extension_id: str) -> str:
+    """The extension id nested under the app's scoped id.
+
+    ``com.example.Widget`` with an app scoped to ``com.example.TEAM`` becomes
+    ``com.example.TEAM.Widget``. Appending the team id to the end of the original
+    extension id breaks the prefix iOS requires.
+    """
+    if not extension_id.startswith(original_app):
+        raise gsa.GsaError(
+            f"The {extension_id} extension does not start with {original_app}, "
+            "so it cannot be given its own App ID."
+        )
+    return scoped_app + extension_id[len(original_app):]
+
+
 def _ensure_app_id(team_id: str, bundle_id: str, name: str) -> dict[str, Any]:
     for existing in developer.list_app_ids(team_id):
         if existing.get("identifier") == bundle_id:
@@ -291,21 +324,65 @@ def _ensure_app_groups(
     if not app_id.get("features", {}).get(developer.FEATURE_APP_GROUPS):
         developer.enable_app_id_feature(team_id, app_id_id, developer.FEATURE_APP_GROUPS)
 
-    existing = {
-        group.get("identifier"): group for group in developer.list_application_groups(team_id)
-    }
+    existing = _groups_by_identifier(team_id)
     group_ids: list[str] = []
     for identifier in identifiers:
         group = existing.get(identifier)
         if group is None:
-            group = developer.add_application_group(team_id, identifier, name)
+            group = _register_app_group(team_id, identifier, name, existing)
         internal_id = group.get("applicationGroup")
         if not internal_id:
-            raise gsa.GsaError(f"app group {identifier} has no id to assign")
+            label = group.get("identifier") or identifier
+            raise gsa.GsaError(f"app group {label} has no id to assign")
         group_ids.append(internal_id)
 
     developer.assign_application_groups(team_id, app_id_id, group_ids)
     return group_ids
+
+
+def _groups_by_identifier(team_id: str) -> dict[str, dict[str, Any]]:
+    return {
+        group["identifier"]: group
+        for group in developer.list_application_groups(team_id)
+        if group.get("identifier")
+    }
+
+
+def _register_app_group(
+    team_id: str,
+    identifier: str,
+    name: str,
+    existing: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Create ``identifier`` on this team, or a team-scoped substitute if another team owns it.
+
+    The literal identifier is tried first. Substituting up front would break an
+    app and its extension that share a group this team is free to register.
+    """
+    try:
+        return developer.add_application_group(team_id, identifier, name)
+    except developer.DeveloperServicesError as exc:
+        log.warning(
+            "add_application_group(%s) failed (%s); re-listing before giving up",
+            identifier,
+            exc,
+        )
+    fresh = _groups_by_identifier(team_id)
+    existing.clear()
+    existing.update(fresh)
+    found = fresh.get(identifier)
+    if found is not None:
+        log.warning(
+            "app group %s was absent from the first list and present after re-list; using it",
+            identifier,
+        )
+        return found
+    scoped = team_scoped_app_group_identifier(identifier, team_id)
+    log.warning("app group %s is not on this team; using %s", identifier, scoped)
+    already = fresh.get(scoped)
+    if already is not None:
+        return already
+    return developer.add_application_group(team_id, scoped, name)
 
 
 def ensure_signing_assets(
@@ -315,6 +392,8 @@ def ensure_signing_assets(
     device_name: str = "iPASide device",
     on_step: Callable[[str], None] | None = None,
     app_groups: list[str] | None = None,
+    extension_bundle_ids: list[str] | None = None,
+    original_bundle_id: str | None = None,
 ) -> dict[str, Any]:
     """Provision cert + device + App ID + profile and cache a signing bundle.
 
@@ -358,6 +437,32 @@ def ensure_signing_assets(
     p12_path.write_bytes(signing.build_p12(cert_der, key_pem))
     profile_path.write_bytes(bytes(profile_data))
 
+    extension_profiles: dict[str, str] = {}
+    if extension_bundle_ids:
+        if not original_bundle_id:
+            raise gsa.GsaError("An extension App ID needs the app's original bundle id.")
+        ext_dir = signing_dir / "extensions"
+        if ext_dir.exists():
+            shutil.rmtree(ext_dir)
+        ext_dir.mkdir()
+        for index, extension_id in enumerate(extension_bundle_ids):
+            scoped = scoped_extension_bundle_id(original_bundle_id, bundle_id, extension_id)
+            step(f"Creating the App ID for {extension_id}\u2026")
+            extension_app = _ensure_app_id(team_id, scoped, f"{app_name} {index + 1}")
+            extension_app_id = (
+                extension_app.get("appIdId")
+                or extension_app.get("appIdPlatform")
+                or extension_app.get("identifier")
+            )
+            step(f"Fetching the profile for {extension_id}\u2026")
+            downloaded = developer.download_profile(team_id, extension_app_id)
+            data = downloaded.get("encodedProfile")
+            if not isinstance(data, (bytes, bytearray)):
+                raise gsa.GsaError(f"The profile for {extension_id} did not download.")
+            path = ext_dir / f"{index}.mobileprovision"
+            path.write_bytes(bytes(data))
+            extension_profiles[extension_id] = str(path)
+
     bundle = {
         "team_id": team_id,
         "team_name": team.get("name"),
@@ -371,6 +476,7 @@ def ensure_signing_assets(
         "profile_path": str(profile_path),
         "app_groups": app_groups or [],
         "app_group_ids": group_ids,
+        "extension_profiles": extension_profiles,
     }
     (signing_dir / _BUNDLE_CACHE).write_text(json.dumps(bundle, indent=2), encoding="utf-8")
     return bundle

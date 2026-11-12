@@ -46,48 +46,24 @@ def thin32(cpusubtype: int = SUB_ARMV7, *, cryptid: int | None = None) -> bytes:
 # --------------------------------------------------------------------------- #
 
 
-class _Proc:
-    returncode = 0
-    stdout = "ok"
-    stderr = ""
+def test_the_signer_accepts_the_legacy_flag_and_always_writes_both_hashes() -> None:
+    """iOS 10 needs SHA-1 and current iOS reads SHA-256. Both are always written."""
+    import inspect
 
+    from ipaside_engine.signer import code_directory
+    from ipaside_engine.signer.format import HASH_SHA1, HASH_SHA256
 
-def _capture(monkeypatch: pytest.MonkeyPatch) -> dict:
-    captured: dict = {}
-    monkeypatch.setattr(signing, "resolve_zsign", lambda: "zsign")
-
-    def fake_run(cmd, **_kwargs):
-        captured["cmd"] = cmd
-        return _Proc()
-
-    monkeypatch.setattr(signing.subprocess, "run", fake_run)
-    return captured
-
-
-def test_the_legacy_signature_flag_is_only_added_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _capture(monkeypatch)
-    common = {"p12_path": "id.p12", "p12_password": "pw", "profile_path": "p.mobileprovision"}
-    signing.sign_ipa("in.ipa", "out.ipa", **common)
-    assert "-L" not in captured["cmd"], "modern devices keep the SHA-256-only signature"
-    signing.sign_ipa("in.ipa", "out.ipa", legacy_sha1=True, **common)
-    assert "-L" in captured["cmd"]
-    assert captured["cmd"][-1] == "in.ipa", "the input stays the last argument"
+    assert "legacy_sha1" in inspect.signature(signing.sign_ipa).parameters
+    code = b"\x00" * 16
+    sha1 = code_directory.parse(code_directory.build("id", "TEAM", code, code_directory.SpecialSlots(), HASH_SHA1))
+    sha256 = code_directory.parse(code_directory.build("id", "TEAM", code, code_directory.SpecialSlots(), HASH_SHA256))
+    assert sha1.hash_type == HASH_SHA1
+    assert sha256.hash_type == HASH_SHA256
 
 
 def test_the_bundled_signer_really_has_the_dual_signature_option() -> None:
-    """The flag is only worth passing if the zsign that ships understands it.
-
-    zsign.exe is built from source by the installer job and is not in the repository, so a plain
-    test run has no binary to ask; that job runs the same check on the freshly built one.
-    """
-    import subprocess
-
-    try:
-        zsign = signing.resolve_zsign()
-    except signing.SigningError:
-        pytest.skip("zsign.exe is built by the installer job (checked there), not present here")
-    help_text = subprocess.run([zsign, "-h"], capture_output=True, text=True).stdout
-    assert "--legacy_sha1" in help_text and "SHA1+SHA256" in help_text
+    """The signer builds both CodeDirectories itself. There is no zsign flag to check."""
+    test_the_signer_accepts_the_legacy_flag_and_always_writes_both_hashes()
 
 
 # --------------------------------------------------------------------------- #

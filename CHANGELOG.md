@@ -4,6 +4,23 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.16] - 2026-11-12
+
+### Added
+
+- **Export unsigned IPA.** Advanced options can save the tweaked IPA without an Apple ID, a device, or a certificate. Turning that option on does not ask you to sign in.
+- **Extensions can be kept.** They are still removed unless you turn that off under Advanced options. You can then keep all of them, or tick the ones to keep. A kept extension is signed with the app's profile, or with its own App ID if you ask for that.
+- **Tweaks load from Frameworks.** A tweak that needs Substrate gets the bundled legacy CydiaSubstrate framework, or ElleKit if you tick that box.
+
+### Changed
+
+- **Signing no longer uses zsign.** iPASide builds the signature itself: SHA-1 and SHA-256 code directories, the profile's entitlements, and a CMS signature. Frameworks and extensions are signed from the inside out. Files that are not changed stay compressed.
+
+### Fixed
+
+- **Signing continues when another Apple team already owns an App Group identifier.** Apple refuses to create a `group.*` string another team registered. iPASide tries that identifier first. If a fresh list still does not show it on this team, it registers `group.….<TEAMID>` instead and signs with that.
+- **Typing in Advanced options no longer jumps the page.** Bundle identifier and display name update without scrolling the window on every key.
+
 ## [1.2.15] - 2026-11-11
 
 ### Changed

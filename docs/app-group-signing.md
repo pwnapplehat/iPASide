@@ -6,7 +6,7 @@ EscapeOS 0.3.0 is the app that made the gap obvious. Its container access uses [
 
 ## What was going wrong
 
-A free provisioning profile grants only what was registered on the App ID before Apple issued the profile. App Groups are one of those features. zsign then signs with that profile.
+A free provisioning profile grants only what was registered on the App ID before Apple issued the profile. App Groups are one of those features. The signer then signs with that profile.
 
 If the IPA's executable was signed with `group.com.ipaside.escapeos` and iPASide never told Apple about that identifier, the new profile did not include it. The installed app lost the group. `containerURL(forSecurityApplicationGroupIdentifier:)` returned nil, and EscapeOS reported that it could not open the other app's data.
 
@@ -19,9 +19,9 @@ On every sideload, before `ensure_signing_assets` downloads the profile:
 1. `ipaside_engine.ipa.app_group_identifiers` opens the IPA, finds `Payload/<App>.app/<CFBundleExecutable>`, and reads the entitlements plist embedded in that executable.
 2. It keeps strings that start with `group.`.
 3. `run_sideload` unions those identifiers with any groups a named signing profile already requires. LiveContainer's groups stay. The IPA's groups are added if they are not already in that list.
-4. `provision.ensure_signing_assets` enables the App Groups feature on the App ID, creates any missing group, assigns the groups, and only then downloads the profile.
+4. `provision.ensure_signing_assets` enables the App Groups feature on the App ID, creates any missing group, assigns the groups, and only then downloads the profile. The literal `group.*` string is registered first. App Group identifiers are unique across every Apple Developer team, so if another team already holds that string Apple refuses it. iPASide lists the team's groups again. If the string is still absent, it registers `group.….<TEAMID>` instead and assigns that. An identifier this team can register is left unchanged.
 
-zsign is not given a replacement entitlements plist for this. An explicit plist would replace the profile's entitlements. The profile Apple returns is what gets signed, and that profile now includes the groups.
+The signer is not given a replacement entitlements plist for this. An explicit plist would replace the profile's entitlements. The profile Apple returns is what gets signed, and that profile now includes the groups.
 
 Refresh signs from the original IPA again, so the same read happens on the next refresh. The group list does not have to be stored in the install record.
 

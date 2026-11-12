@@ -568,6 +568,44 @@ class SideloadResult {
       'bundleId: $bundleId)';
 }
 
+/// An unsigned IPA written by `export-unsigned`.
+class UnsignedExportResult {
+  /// Creates an export outcome.
+  const UnsignedExportResult({this.status, this.name, this.output});
+
+  /// Parses an `export-unsigned` payload.
+  factory UnsignedExportResult.fromJson(Map<String, dynamic> json) =>
+      UnsignedExportResult(
+        status: jsonString(json, 'status'),
+        name: jsonString(json, 'name'),
+        output: jsonString(json, 'output'),
+      );
+
+  /// `exported` on success.
+  final String? status;
+
+  /// Display name written into the IPA.
+  final String? name;
+
+  /// Path of the unsigned IPA.
+  final String? output;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UnsignedExportResult &&
+          other.status == status &&
+          other.name == name &&
+          other.output == output;
+
+  @override
+  int get hashCode => Object.hash(status, name, output);
+
+  @override
+  String toString() =>
+      'UnsignedExportResult(status: $status, name: $name, output: $output)';
+}
+
 /// One development certificate on a team, and who registered it.
 ///
 /// Apple scopes its certificate limit per machine rather than per account, so one team
@@ -2232,9 +2270,12 @@ class SideloadOptions {
     this.bundleId,
     this.name,
     this.removeExtensions = true,
+    this.keepExtensions = const <String>[],
+    this.ownExtensionAppIds = false,
     this.removeDeviceRestrictions = true,
     this.enableFileSharing = false,
     this.weakDylibs = false,
+    this.substrateProvider = 'legacy',
     this.keepSigned = false,
     this.signedDirectory,
     this.dylibs = const <String>[],
@@ -2257,6 +2298,16 @@ class SideloadOptions {
   /// Remove app extensions and any watch app (a free-account requirement).
   final bool removeExtensions;
 
+  /// `PlugIns` folders to keep when [removeExtensions] is false.
+  ///
+  /// Empty means keep every extension. Ignored when [removeExtensions] is true.
+  final List<String> keepExtensions;
+
+  /// Register a separate App ID and profile for each kept extension.
+  /// Ignored when [removeExtensions] is true. A free Apple ID can only
+  /// register a few App IDs a week, so this stays off unless asked for.
+  final bool ownExtensionAppIds;
+
   /// Remove `UISupportedDevices` restrictions.
   final bool removeDeviceRestrictions;
 
@@ -2265,6 +2316,9 @@ class SideloadOptions {
 
   /// Inject dylibs as `LC_LOAD_WEAK_DYLIB`; only meaningful with [dylibs].
   final bool weakDylibs;
+
+  /// `legacy` or `ellekit`. The framework bundled when a tweak links Substrate.
+  final String substrateProvider;
 
   /// Keep the signed `.ipa` after installing instead of deleting it.
   final bool keepSigned;
@@ -2287,9 +2341,12 @@ class SideloadOptions {
     String? bundleId,
     String? name,
     bool? removeExtensions,
+    List<String>? keepExtensions,
+    bool? ownExtensionAppIds,
     bool? removeDeviceRestrictions,
     bool? enableFileSharing,
     bool? weakDylibs,
+    String? substrateProvider,
     bool? keepSigned,
     String? signedDirectory,
     List<String>? dylibs,
@@ -2300,10 +2357,13 @@ class SideloadOptions {
         bundleId: bundleId ?? this.bundleId,
         name: name ?? this.name,
         removeExtensions: removeExtensions ?? this.removeExtensions,
+        keepExtensions: keepExtensions ?? this.keepExtensions,
+        ownExtensionAppIds: ownExtensionAppIds ?? this.ownExtensionAppIds,
         removeDeviceRestrictions:
             removeDeviceRestrictions ?? this.removeDeviceRestrictions,
         enableFileSharing: enableFileSharing ?? this.enableFileSharing,
         weakDylibs: weakDylibs ?? this.weakDylibs,
+        substrateProvider: substrateProvider ?? this.substrateProvider,
         keepSigned: keepSigned ?? this.keepSigned,
         signedDirectory: signedDirectory ?? this.signedDirectory,
         dylibs: dylibs ?? this.dylibs,
@@ -2318,9 +2378,12 @@ class SideloadOptions {
           other.bundleId == bundleId &&
           other.name == name &&
           other.removeExtensions == removeExtensions &&
+          _listEquals(other.keepExtensions, keepExtensions) &&
+          other.ownExtensionAppIds == ownExtensionAppIds &&
           other.removeDeviceRestrictions == removeDeviceRestrictions &&
           other.enableFileSharing == enableFileSharing &&
           other.weakDylibs == weakDylibs &&
+          other.substrateProvider == substrateProvider &&
           other.keepSigned == keepSigned &&
           other.signedDirectory == signedDirectory &&
           _listEquals(other.dylibs, dylibs);
@@ -2332,9 +2395,12 @@ class SideloadOptions {
         bundleId,
         name,
         removeExtensions,
+        Object.hashAll(keepExtensions),
+        ownExtensionAppIds,
         removeDeviceRestrictions,
         enableFileSharing,
         weakDylibs,
+        substrateProvider,
         keepSigned,
         signedDirectory,
         Object.hashAll(dylibs),
@@ -2345,6 +2411,7 @@ class SideloadOptions {
       'connection: $connection, '
       'bundleId: $bundleId, name: $name, '
       'removeExtensions: $removeExtensions, '
+      'ownExtensionAppIds: $ownExtensionAppIds, '
       'removeDeviceRestrictions: $removeDeviceRestrictions, '
       'enableFileSharing: $enableFileSharing, weakDylibs: $weakDylibs, '
       'keepSigned: $keepSigned, signedDirectory: $signedDirectory, '

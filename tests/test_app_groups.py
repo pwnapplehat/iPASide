@@ -21,9 +21,16 @@ ALTSTORE = f"group.com.rileytestut.AltStore.{TEAM}"
 class _Portal:
     """Records the developerservices2 calls provisioning makes, in order."""
 
-    def __init__(self, existing: list[dict[str, str]] | None = None):
+    def __init__(
+        self,
+        existing: list[dict[str, str]] | None = None,
+        fail_add: set[str] | None = None,
+        reveal_after_failed_add: dict[str, str] | None = None,
+    ):
         self.calls: list[tuple[str, tuple]] = []
         self.existing = list(existing or [])
+        self.fail_add = set(fail_add or [])
+        self.reveal_after_failed_add = reveal_after_failed_add
         self._next_id = 0
 
     def enable_app_id_feature(self, team_id, app_id_id, feature, enabled=True):
@@ -36,6 +43,14 @@ class _Portal:
 
     def add_application_group(self, team_id, identifier, name):
         self.calls.append(("add", (team_id, identifier, name)))
+        if identifier in self.fail_add:
+            if self.reveal_after_failed_add is not None:
+                self.existing.append(self.reveal_after_failed_add)
+                self.reveal_after_failed_add = None
+            raise developer.DeveloperServicesError(
+                f"An Application Group with Identifier '{identifier}' is not available. "
+                "Please enter a different string."
+            )
         self._next_id += 1
         group = {"identifier": identifier, "applicationGroup": f"NEW{self._next_id}"}
         self.existing.append(group)
@@ -50,8 +65,12 @@ class _Portal:
 
 @pytest.fixture
 def portal(monkeypatch):
-    def _make(existing=None, features=None):
-        fake = _Portal(existing)
+    def _make(existing=None, features=None, fail_add=None, reveal_after_failed_add=None):
+        fake = _Portal(
+            existing,
+            fail_add=fail_add,
+            reveal_after_failed_add=reveal_after_failed_add,
+        )
         for method in (
             "enable_app_id_feature",
             "list_application_groups",
@@ -134,6 +153,51 @@ def test_a_group_without_an_id_is_refused(portal):
 
     with pytest.raises(Exception, match="no id to assign"):
         _run(fake, [SIDESTORE])
+
+
+GROUP = "group.com.ipaside.escapeos"
+SCOPED = f"{GROUP}.{TEAM}"
+
+
+def test_a_group_another_team_owns_falls_back_to_a_team_scoped_id(portal):
+    """The literal id is tried first. Apple refusing it, and a fresh list still
+    missing it, means another team owns that string."""
+    fake = portal(fail_add={GROUP})
+    group_ids = _run(fake, [GROUP])
+
+    added = [args[1] for name, args in fake.calls if name == "add"]
+    assert added == [GROUP, SCOPED]
+    assert group_ids == ["NEW1"]
+    lists_after_first_add = [
+        index for index, (name, _args) in enumerate(fake.calls)
+        if name == "list" and index > fake.names().index("add")
+    ]
+    assert lists_after_first_add, "a failed create re-lists before substituting"
+
+
+def test_an_existing_team_scoped_group_is_reused(portal):
+    fake = portal(
+        existing=[{"identifier": SCOPED, "applicationGroup": "OWNED1"}],
+        fail_add={GROUP},
+    )
+    group_ids = _run(fake, [GROUP])
+
+    added = [args[1] for name, args in fake.calls if name == "add"]
+    assert added == [GROUP]
+    assert group_ids == ["OWNED1"]
+
+
+def test_a_group_found_on_relist_is_used_without_a_substitute(portal):
+    """The first list can miss a group this team already holds. The re-list is the check."""
+    fake = portal(
+        fail_add={GROUP},
+        reveal_after_failed_add={"identifier": GROUP, "applicationGroup": "RACE1"},
+    )
+    group_ids = _run(fake, [GROUP])
+
+    added = [args[1] for name, args in fake.calls if name == "add"]
+    assert added == [GROUP]
+    assert group_ids == ["RACE1"]
 
 
 def test_no_app_groups_means_no_portal_calls(monkeypatch):

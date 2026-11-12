@@ -187,7 +187,7 @@ A Windows app driving a Python engine that does the Apple-facing work:
 ┌─────────────────────────────┐    JSON over stdio     ┌──────────────────────────┐
 │  iPASide.Flutter (Dart)     │ ─────────────────────▶ │  iPASide.Engine (Python) │
 │  chromeless desktop UI      │ ◀───────────────────── │  pymobiledevice3 + GSA   │
-│  drag-drop, live progress   │     progress events    │  auth + anisette + zsign │
+│  drag-drop, live progress   │     progress events    │  auth + anisette + signer │
 └─────────────────────────────┘                        └──────────────────────────┘
 ```
 
@@ -204,15 +204,16 @@ A Windows app driving a Python engine that does the Apple-facing work:
 - **TLS** — Apple's own `Apple Root CA` is pinned, and verification is never
   disabled anywhere in the codebase.
 - **Provisioning** — the same `developerservices2.apple.com` API Xcode uses.
-- **Signing** — a modern `zsign` (SHA256-only CodeDirectory, canonical DER
-  entitlements), built from source, with dylib injection and extension stripping.
+- **Signing** — iPASide's own signer. Every Mach-O gets a SHA-1 CodeDirectory and a
+  SHA-256 alternate, the profile's entitlements, and a CMS signature. Frameworks and
+  extensions are signed from the inside out. Files that do not change stay compressed.
 - **Auto-refresh** — a registry tracks each install's expiry, and a daily Windows
   scheduled task runs `iPASide.exe --auto-refresh` to re-sign what is due.
 
 ## Build it yourself
 
 You need the **Flutter SDK** (3.44+) with **Visual Studio 2022** and its "Desktop
-development with C++" workload, **Python 3.12**, and **MSYS2** to build `zsign`.
+development with C++" workload, and **Python 3.12**.
 Windows **Developer Mode** must be on, because Flutter wires plugins up with
 symlinks.
 
@@ -221,23 +222,20 @@ symlinks.
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements-dev.txt
 
-# 2. zsign (from an MSYS2 shell) -> src/iPASide.Engine/ipaside_engine/vendor/zsign.exe
-bash tools/zsign/build-zsign.sh
-
-# 3. Run the engine directly
+# 2. Run the engine directly
 cd src\iPASide.Engine
 python -m ipaside_engine doctor
 python -m ipaside_engine devices
 
-# 4. Run the desktop app (dev; it finds the engine via the .venv automatically)
+# 3. Run the desktop app (dev; it finds the engine via the .venv automatically)
 cd src\iPASide.Flutter
 flutter run -d windows
 
-# 5. Tests
+# 4. Tests
 python -m pytest                                  # engine
 cd src\iPASide.Flutter; flutter test              # app
 
-# 6. Full installer (portable engine + Flutter runner + Inno Setup)
+# 5. Full installer (portable engine + Flutter runner + Inno Setup)
 powershell -File packaging\build-installer.ps1 -Version 1.0.0
 ```
 

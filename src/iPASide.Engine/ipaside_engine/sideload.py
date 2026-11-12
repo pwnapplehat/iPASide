@@ -328,6 +328,9 @@ def run_sideload(
     weak_dylibs: bool = False,
     inject_into_extensions: bool = False,
     remove_extensions: bool = True,
+    keep_extensions: list[str] | None = None,
+    own_extension_app_ids: bool = False,
+    substrate_provider: str = "legacy",
     remove_uisd: bool = True,
     enable_file_sharing: bool = False,
     keep_signed: bool = False,
@@ -397,10 +400,20 @@ def run_sideload(
         if group not in app_groups:
             app_groups.append(group)
 
+    extension_ids: list[str] = []
+    if own_extension_app_ids and not remove_extensions:
+        keep = set(keep_extensions or [])
+        for folder, identifier in ipa_module.extension_identities(ipa_path):
+            if keep and folder not in keep:
+                continue
+            extension_ids.append(identifier)
+
     bundle = provision.ensure_signing_assets(
         target_bundle_id, udid, app_name=app_name,
         on_step=lambda message: progress("provision", None, message),
         app_groups=app_groups,
+        extension_bundle_ids=extension_ids,
+        original_bundle_id=info.get("bundle_id"),
     )
 
     progress("sign", None, "Signing the app\u2026")
@@ -424,8 +437,19 @@ def run_sideload(
         # the added files are covered by the code signature; the seeded copy lives in
         # scratch and goes with it.
         sign_source = ipa_path
+        if not remove_extensions and keep_extensions is not None:
+            filtered = scratch / "extensions.ipa"
+            ipa_module.export_unsigned(
+                ipa_path,
+                str(filtered),
+                strip_extensions=False,
+                keep_extensions=keep_extensions,
+                remove_device_restrictions=False,
+                enable_file_sharing=False,
+            )
+            sign_source = str(filtered)
         if profile:
-            seeded = _profile_pre_sign(profile, ipa_path, bundle, str(scratch))
+            seeded = _profile_pre_sign(profile, sign_source, bundle, str(scratch))
             if seeded:
                 sign_source = seeded
 
@@ -444,8 +468,11 @@ def run_sideload(
             weak_dylibs=weak_dylibs,
             inject_into_extensions=inject_into_extensions,
             entitlements=entitlements_path,
+            zip_level=1,
             temp_folder=str(scratch),
             legacy_sha1=legacy_sha1,
+            extension_profiles=bundle.get("extension_profiles") or None,
+            substrate_provider=substrate_provider,
         )
 
         progress("install", 0, f"Uploading to {target_name}\u2026")
@@ -522,6 +549,9 @@ def run_sideload(
                 "weak_dylibs": weak_dylibs,
                 "inject_into_extensions": inject_into_extensions,
                 "remove_extensions": remove_extensions,
+                "keep_extensions": keep_extensions,
+                "own_extension_app_ids": own_extension_app_ids,
+                "substrate_provider": substrate_provider,
                 "remove_uisd": remove_uisd,
                 "enable_file_sharing": enable_file_sharing,
                 # By name, not as the generated entitlements - see _signing_profile.
@@ -762,6 +792,9 @@ def refresh_record(
             weak_dylibs=bool(options.get("weak_dylibs")),
             inject_into_extensions=bool(options.get("inject_into_extensions")),
             remove_extensions=options.get("remove_extensions", True),
+            keep_extensions=options.get("keep_extensions"),
+            own_extension_app_ids=bool(options.get("own_extension_app_ids")),
+            substrate_provider=options.get("substrate_provider") or "legacy",
             remove_uisd=options.get("remove_uisd", True),
             enable_file_sharing=bool(options.get("enable_file_sharing")),
             keep_signed=keep_signed,

@@ -130,6 +130,15 @@ void main() {
           isNull,
         );
       });
+
+      test('saveUnsignedIpa reports a cancelled pick too', () async {
+        expect(
+          await const NativeFilePickerService().saveUnsignedIpa(
+            suggestedName: 'App.ipa',
+          ),
+          isNull,
+        );
+      });
     },
   );
 }

@@ -154,6 +154,9 @@ def sideload_harness(tmp_path, monkeypatch):
     monkeypatch.setattr(sideload, "resolve_udid", lambda _udid: "UDID")
     monkeypatch.setattr(sideload.ipa_module, "inspect", lambda _p: {"bundle_id": "com.example.app", "display_name": "Example"})
     monkeypatch.setattr(sideload.provision, "team_scoped_bundle_id", lambda b: f"{b}.TEAM")
+    # A signing profile resolves its app groups before provisioning, so any test whose
+    # bundle id is recognised (EscapeOS) reaches this even with provisioning stubbed.
+    monkeypatch.setattr(sideload.developer, "list_teams", lambda: [{"teamId": "TEAM"}])
     monkeypatch.setattr(sideload.paths, "signed_dir", lambda: signed_dir)
     monkeypatch.setattr(
         sideload.provision, "ensure_signing_assets",

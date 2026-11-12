@@ -51,6 +51,19 @@ class EngineApi {
         onProgress: _progressPump(onProgress),
       );
 
+  /// Applies the sideload options and tweaks, then writes an unsigned IPA.
+  ///
+  /// No Apple ID, device, or certificate. The file is for signing elsewhere.
+  Future<UnsignedExportResult> exportUnsigned(
+    String path,
+    SideloadOptions options, {
+    required String output,
+  }) =>
+      _runTyped<UnsignedExportResult>(
+        buildExportUnsignedArgs(path, options, output: output),
+        _asObject(UnsignedExportResult.fromJson),
+      );
+
   // ---- LiveContainer ------------------------------------------------------ //
 
   /// Reports whether LiveContainer is installed and how far its setup got.
@@ -576,6 +589,13 @@ class EngineApi {
 
     if (!options.removeExtensions) {
       args.add('--no-remove-extensions');
+      for (final String extension in options.keepExtensions) {
+        args.add('--keep-extension');
+        args.add(extension);
+      }
+      if (options.ownExtensionAppIds) {
+        args.add('--own-extension-app-ids');
+      }
     }
     if (!options.removeDeviceRestrictions) {
       args.add('--no-remove-device-restrictions');
@@ -587,6 +607,62 @@ class EngineApi {
     args.addAll(
       _signedOutputArgs(options.keepSigned, options.signedDirectory),
     );
+
+    for (final String dylib in options.dylibs) {
+      args.add('--dylib');
+      args.add(dylib);
+    }
+
+    if (options.dylibs.isNotEmpty && options.weakDylibs) {
+      args.add('--weak-dylibs');
+    }
+    if (options.dylibs.isNotEmpty && options.substrateProvider == 'ellekit') {
+      args.add('--substrate');
+      args.add('ellekit');
+    }
+
+    return args;
+  }
+
+  /// Builds the `export-unsigned` argv: the same option flags as a sideload,
+  /// without a device, an Apple ID, or a kept signed copy.
+  static List<String> buildExportUnsignedArgs(
+    String path,
+    SideloadOptions options, {
+    required String output,
+  }) {
+    final List<String> args = <String>[
+      'export-unsigned',
+      path,
+      '--output',
+      output,
+    ];
+
+    final String? bundleId = options.bundleId;
+    if (bundleId != null && bundleId.trim().isNotEmpty) {
+      args.add('--bundle-id');
+      args.add(bundleId.trim());
+    }
+
+    final String? name = options.name;
+    if (name != null && name.trim().isNotEmpty) {
+      args.add('--name');
+      args.add(name.trim());
+    }
+
+    if (!options.removeExtensions) {
+      args.add('--no-remove-extensions');
+      for (final String extension in options.keepExtensions) {
+        args.add('--keep-extension');
+        args.add(extension);
+      }
+    }
+    if (!options.removeDeviceRestrictions) {
+      args.add('--no-remove-device-restrictions');
+    }
+    if (options.enableFileSharing) {
+      args.add('--enable-file-sharing');
+    }
 
     for (final String dylib in options.dylibs) {
       args.add('--dylib');

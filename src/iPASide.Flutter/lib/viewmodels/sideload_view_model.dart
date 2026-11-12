@@ -110,8 +110,11 @@ class SideloadViewModel extends BaseViewModel {
   String get frameworksChip => '${_inspection?.frameworks.length ?? 0} frameworks';
 
   String get extensionsChip {
-    final count = _inspection?.extensions.length ?? 0;
-    return count > 0 ? '$count extensions \u2192 removed' : 'no extensions';
+    final List<String> all = availableExtensions;
+    if (all.isEmpty) return 'no extensions';
+    if (_removeExtensions) return '${all.length} extensions \u2192 removed';
+    if (_keptExtensions.isEmpty) return '${all.length} extensions \u2192 kept';
+    return '${_keptExtensions.length} of ${all.length} extensions kept';
   }
 
   /// Watermark for the display-name override: the app's own name.
@@ -123,9 +126,13 @@ class SideloadViewModel extends BaseViewModel {
   String _bundleIdOverride = '';
   String _nameOverride = '';
   bool _removeExtensions = true;
+  bool _ownExtensionAppIds = false;
+  Set<String> _keptExtensions = <String>{};
   bool _removeDeviceRestrictions = true;
   bool _enableFileSharing = false;
-  bool _weakDylibs = false;
+  bool _weakDylibs = true;
+  bool _useEllekit = false;
+  bool _exportOnly = false;
   List<TweakRow> _tweaks = const [];
 
   /// Disclosure state for the Advanced section. Survives navigation; never
@@ -141,20 +148,62 @@ class SideloadViewModel extends BaseViewModel {
   set bundleIdOverride(String value) {
     if (_bundleIdOverride == value) return;
     _bundleIdOverride = value;
-    notify();
+    // The field already shows what was typed. Rebuilding the page here makes
+    // the scroll view chase the caret on every key.
   }
 
   String get nameOverride => _nameOverride;
   set nameOverride(String value) {
     if (_nameOverride == value) return;
     _nameOverride = value;
-    notify();
   }
 
   bool get removeExtensions => _removeExtensions;
   set removeExtensions(bool value) {
     if (_removeExtensions == value) return;
     _removeExtensions = value;
+    if (!value) {
+      _keptExtensions = availableExtensions.toSet();
+    }
+    notify();
+  }
+
+  List<String> get availableExtensions =>
+      List<String>.unmodifiable(_inspection?.extensions ?? const <String>[]);
+
+  bool get useEllekit => _useEllekit;
+  set useEllekit(bool value) {
+    if (_useEllekit == value) return;
+    _useEllekit = value;
+    notify();
+  }
+
+  bool get ownExtensionAppIds => _ownExtensionAppIds;
+  set ownExtensionAppIds(bool value) {
+    if (_ownExtensionAppIds == value) return;
+    _ownExtensionAppIds = value;
+    notify();
+  }
+
+  bool keepsExtension(String name) => _keptExtensions.contains(name);
+
+  bool get _extensionsRemoved =>
+      _removeExtensions ||
+      (availableExtensions.isNotEmpty && _keptExtensions.isEmpty);
+
+  List<String> get _extensionsKept {
+    if (_extensionsRemoved || _keptExtensions.length == availableExtensions.length) {
+      return const <String>[];
+    }
+    return _keptExtensions.toList();
+  }
+
+  void setExtensionKept(String name, bool kept) {
+    if (kept) {
+      _keptExtensions.add(name);
+    } else {
+      _keptExtensions.remove(name);
+    }
     notify();
   }
 
@@ -172,6 +221,17 @@ class SideloadViewModel extends BaseViewModel {
     notify();
   }
 
+  /// When set, the main button writes an unsigned IPA instead of installing.
+  bool get exportOnly => _exportOnly;
+  set exportOnly(bool value) {
+    if (_exportOnly == value) return;
+    _exportOnly = value;
+    notify();
+  }
+
+  String get actionLabel =>
+      _exportOnly ? 'Export Unsigned IPA' : 'Sideload to iPhone';
+
   bool get weakDylibs => _weakDylibs;
   set weakDylibs(bool value) {
     if (_weakDylibs == value) return;
@@ -188,6 +248,8 @@ class SideloadViewModel extends BaseViewModel {
   bool _isSucceeded = false;
   bool _isUnexpected = false;
   bool _isFailed = false;
+  String _failureTitle = 'Sideload failed';
+  String? _exportMessage;
   SideloadProgressState _progress = const SideloadProgressState();
   bool _isInstallComplete = false;
   String _successTitle = '';
@@ -197,6 +259,8 @@ class SideloadViewModel extends BaseViewModel {
   bool get isSucceeded => _isSucceeded;
   bool get isUnexpected => _isUnexpected;
   bool get isFailed => _isFailed;
+  String get failureTitle => _failureTitle;
+  String? get exportMessage => _exportMessage;
   int get activeStepIndex => _progress.activeIndex;
   String? get stepText => _progress.stepText;
   double get percent => _progress.percent;
@@ -205,7 +269,8 @@ class SideloadViewModel extends BaseViewModel {
   String get successTitle => _successTitle;
   String? get failureMessage => _failureMessage;
 
-  bool get showStepper => _isRunning || _isSucceeded || _isFailed;
+  bool get showStepper =>
+      !_exportOnly && (_isRunning || _isSucceeded || _isFailed);
 
   // ---- Drop-target surface ----
 
@@ -311,6 +376,10 @@ class SideloadViewModel extends BaseViewModel {
   Future<void> sideload() async {
     final path = _ipaPath;
     if (path == null || _inspection == null || isBlocked || _isRunning) return;
+    if (_exportOnly) {
+      await _exportUnsigned(path);
+      return;
+    }
 
     // Claimed before the first await, not after the sign-in probe below: the
     // button is disabled while a run is on, but the guard has to hold on its own,
@@ -347,10 +416,13 @@ class SideloadViewModel extends BaseViewModel {
         connection: _devices.connectionArg,
         bundleId: _bundleIdOverride,
         name: _nameOverride,
-        removeExtensions: _removeExtensions,
+        removeExtensions: _extensionsRemoved,
+        keepExtensions: _extensionsKept,
+        ownExtensionAppIds: _ownExtensionAppIds,
         removeDeviceRestrictions: _removeDeviceRestrictions,
         enableFileSharing: _enableFileSharing,
         weakDylibs: _weakDylibs,
+        substrateProvider: _useEllekit ? 'ellekit' : 'legacy',
         keepSigned: signed.keep,
         signedDirectory: signed.directory,
         dylibs: [for (final t in _resolvedTweaks) if (t.path != null) t.path!],
@@ -374,6 +446,61 @@ class SideloadViewModel extends BaseViewModel {
       _isRunning = false;
       notify();
     }
+  }
+
+  Future<void> _exportUnsigned(String path) async {
+    final String suggested = _ipaFileName(
+      _nameOverride.trim().isNotEmpty
+          ? _nameOverride.trim()
+          : (displayName.isEmpty ? fileName : displayName),
+    );
+    final String? output =
+        await _picker.saveUnsignedIpa(suggestedName: suggested);
+    if (output == null) return;
+
+    _resetRun();
+    _isRunning = true;
+    _failureTitle = 'Export failed';
+    notify();
+
+    try {
+      final options = SideloadOptions(
+        bundleId: _bundleIdOverride,
+        name: _nameOverride,
+        removeExtensions: _extensionsRemoved,
+        keepExtensions: _extensionsKept,
+        ownExtensionAppIds: _ownExtensionAppIds,
+        removeDeviceRestrictions: _removeDeviceRestrictions,
+        enableFileSharing: _enableFileSharing,
+        weakDylibs: _weakDylibs,
+        substrateProvider: _useEllekit ? 'ellekit' : 'legacy',
+        dylibs: [for (final t in _resolvedTweaks) if (t.path != null) t.path!],
+      );
+      final result =
+          await _engine.exportUnsigned(path, options, output: output);
+      if (result.status == 'exported') {
+        _isSucceeded = true;
+        _successTitle = 'Exported ${result.name ?? suggested}';
+        _exportMessage =
+            'Saved an unsigned IPA to $output. Sign and install it with another tool.';
+      } else {
+        _isUnexpected = true;
+      }
+    } catch (error) {
+      if (!BaseViewModel.isShutdown(error)) {
+        _failureMessage = BaseViewModel.errorText(error);
+        _isFailed = true;
+      }
+    } finally {
+      _isRunning = false;
+      notify();
+    }
+  }
+
+  String _ipaFileName(String raw) {
+    final String cleaned = raw.replaceAll(RegExp(r'[<>:"/\\|?*]'), '').trim();
+    final String base = cleaned.isEmpty ? 'App' : cleaned;
+    return base.toLowerCase().endsWith('.ipa') ? base : '$base.ipa';
   }
 
   // ---- Internals ----
@@ -402,9 +529,12 @@ class SideloadViewModel extends BaseViewModel {
     _bundleIdOverride = '';
     _nameOverride = '';
     _removeExtensions = true;
+    _ownExtensionAppIds = false;
+    _keptExtensions = <String>{};
     _removeDeviceRestrictions = true;
     _enableFileSharing = false;
-    _weakDylibs = false;
+    _weakDylibs = true;
+    _useEllekit = false;
   }
 
   void _resetRun() {
@@ -412,6 +542,8 @@ class SideloadViewModel extends BaseViewModel {
     _isSucceeded = false;
     _isUnexpected = false;
     _isFailed = false;
+    _failureTitle = 'Sideload failed';
+    _exportMessage = null;
     _progress = const SideloadProgressState();
     _isInstallComplete = false;
     _successTitle = '';

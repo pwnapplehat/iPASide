@@ -81,6 +81,10 @@ class _FakePicker implements FilePickerService {
   @override
   Future<String?> savePairingFile({required String suggestedName}) async =>
       null;
+
+  @override
+  Future<String?> saveUnsignedIpa({required String suggestedName}) async =>
+      null;
 }
 
 /// An in-memory settings store: nothing here touches the real settings file, and

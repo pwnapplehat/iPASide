@@ -51,6 +51,7 @@ class AppTextField extends StatelessWidget {
       maxLength: maxLength,
       style: mono ? context.t.mono.copyWith(fontSize: FontSizes.body) : context.t.body,
       cursorColor: p.accent,
+      scrollPadding: EdgeInsets.zero,
       inputFormatters: digitsOnly ? [FilteringTextInputFormatter.digitsOnly] : null,
       onChanged: onChanged,
       onSubmitted: onSubmitted,

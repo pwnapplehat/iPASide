@@ -152,6 +152,10 @@ class _FakePicker implements FilePickerService {
     pairingSaveCount++;
     return pairingToSave;
   }
+
+  @override
+  Future<String?> saveUnsignedIpa({required String suggestedName}) async =>
+      throw UnsupportedError('Settings never exports an IPA.');
 }
 
 /// A dialog stand-in: answers [confirm] without a navigator.

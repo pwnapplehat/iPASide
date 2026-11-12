@@ -82,30 +82,6 @@ jobs:
       - name: Enable symlink support
         run: reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
 
-      # Build zsign.exe from source (SHA256 + DER), the way the app expects it.
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            git make mingw-w64-x86_64-gcc mingw-w64-x86_64-openssl
-            mingw-w64-x86_64-zlib mingw-w64-x86_64-minizip mingw-w64-x86_64-pkgconf
-      - name: Build zsign
-        shell: msys2 {0}
-        run: bash tools/zsign/build-zsign.sh
-
-      # iOS 10 and earlier only verify a SHA-1 signature, and iPASide asks zsign for one with -L
-      # (issue #11). This job is where the signer exists, so a signer that ever loses the option
-      # fails the build here instead of failing on somebody's iPad.
-      - name: Check zsign can sign for iOS 10 and earlier
-        shell: bash
-        run: |
-          zsign=src/iPASide.Engine/ipaside_engine/vendor/zsign.exe
-          test -f "$zsign"
-          # zsign exits non-zero after printing its usage, so read the text and ignore the status.
-          help_text="$("$zsign" -h 2>&1 || true)"
-          grep -q -- "--legacy_sha1" <<< "$help_text"
-
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 

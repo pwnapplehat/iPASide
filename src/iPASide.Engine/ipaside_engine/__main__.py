@@ -424,6 +424,9 @@ def _cmd_sideload(args: argparse.Namespace) -> int:
             weak_dylibs=args.weak_dylibs,
             inject_into_extensions=args.inject_extensions,
             remove_extensions=args.remove_extensions,
+            keep_extensions=args.keep_extension,
+            own_extension_app_ids=args.own_extension_app_ids,
+            substrate_provider=args.substrate,
             remove_uisd=args.remove_device_restrictions,
             enable_file_sharing=args.enable_file_sharing,
             keep_signed=args.keep_signed,
@@ -907,6 +910,35 @@ def _cmd_prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_unsigned(args: argparse.Namespace) -> int:
+    """Write a tweaked IPA with no signature and no Apple ID."""
+    try:
+        report = ipa.export_unsigned(
+            args.ipa,
+            args.output,
+            strip_extensions=args.remove_extensions,
+            keep_extensions=args.keep_extension,
+            remove_device_restrictions=args.remove_device_restrictions,
+            bundle_id=args.bundle_id,
+            display_name=args.name,
+            bundle_version=args.set_version,
+            enable_file_sharing=args.enable_file_sharing,
+            dylibs=args.dylib,
+            weak_dylibs=args.weak_dylibs,
+        )
+    except EngineError as exc:
+        if args.json:
+            _emit(args, {"status": "error", "error": str(exc)})
+        else:
+            print(f"Export failed: {exc}")
+        return 1
+    if args.json:
+        _emit(args, {"status": "exported", **report})
+        return 0
+    print(f"Exported {report['name']} -> {report['output']}")
+    return 0
+
+
 def _read_credentials(args: argparse.Namespace) -> tuple[str | None, str | None]:
     """Resolve (email, password) from a creds file, env var, or prompt.
 
@@ -1310,6 +1342,7 @@ _HANDLERS = {
     "revoke-cert": _cmd_revoke_cert,
     "inspect": _cmd_inspect,
     "prepare": _cmd_prepare,
+    "export-unsigned": _cmd_export_unsigned,
     "install": _cmd_install,
     "uninstall": _cmd_uninstall,
     "version": _cmd_version,
@@ -1474,7 +1507,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("ipa", help="path to an .ipa file")
 
     sign_parser = sub.add_parser(
-        "sign", parents=[common], help="sign an IPA with the provisioned identity (zsign)"
+        "sign", parents=[common], help="sign an IPA with the provisioned identity"
     )
     sign_parser.add_argument("ipa", help="path to the input .ipa file")
     sign_parser.add_argument("--output", "-o", required=True, help="path to the signed .ipa")
@@ -1512,6 +1545,18 @@ def build_parser() -> argparse.ArgumentParser:
     sideload_parser.add_argument(
         "--remove-extensions", action=argparse.BooleanOptionalAction, default=True,
         help="remove app extensions + watch app (free-account requirement)",
+    )
+    sideload_parser.add_argument(
+        "--keep-extension", action="append", default=None,
+        help="when extensions are not all removed, the PlugIns folder to keep (repeatable)",
+    )
+    sideload_parser.add_argument(
+        "--own-extension-app-ids", action="store_true",
+        help="register a separate App ID and profile for each kept extension",
+    )
+    sideload_parser.add_argument(
+        "--substrate", choices=("legacy", "ellekit"), default="legacy",
+        help="Substrate framework to bundle when a tweak needs one",
     )
     sideload_parser.add_argument(
         "--remove-device-restrictions", action=argparse.BooleanOptionalAction, default=True,
@@ -1709,6 +1754,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     prepare_parser.add_argument(
         "--keep-dir", action="store_true", help="keep the extracted/prepared work directory"
+    )
+
+    export_parser = sub.add_parser(
+        "export-unsigned",
+        parents=[common],
+        help="apply options and tweaks, then write an unsigned IPA (no Apple ID)",
+    )
+    export_parser.add_argument("ipa", help="path to the input .ipa file")
+    export_parser.add_argument("--output", "-o", required=True, help="path to the unsigned .ipa")
+    export_parser.add_argument("--bundle-id", default=None, help="override bundle id")
+    export_parser.add_argument("--name", default=None, help="app display name (CFBundleDisplayName)")
+    export_parser.add_argument("--set-version", default=None, help="override CFBundleShortVersionString")
+    export_parser.add_argument("--dylib", action="append", default=None, help="inject a dylib/tweak (repeatable)")
+    export_parser.add_argument("--weak-dylibs", action="store_true", help="inject dylibs as LC_LOAD_WEAK_DYLIB")
+    export_parser.add_argument("--enable-file-sharing", action="store_true", help="enable Files app file sharing")
+    export_parser.add_argument(
+        "--remove-extensions", action=argparse.BooleanOptionalAction, default=True,
+        help="remove app extensions and the watch app",
+    )
+    export_parser.add_argument(
+        "--keep-extension", action="append", default=None,
+        help="when extensions are not all removed, the PlugIns folder to keep (repeatable)",
+    )
+    export_parser.add_argument(
+        "--remove-device-restrictions", action=argparse.BooleanOptionalAction, default=True,
+        help="remove UISupportedDevices",
     )
 
     install_parser = sub.add_parser(

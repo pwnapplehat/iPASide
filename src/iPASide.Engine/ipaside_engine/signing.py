@@ -1,16 +1,14 @@
 """Signing-material crypto helpers.
 
-Generates the RSA keypair + PKCS#10 CSR sent to Apple to obtain a development
-certificate, and assembles the resulting certificate plus the (locally-held)
-private key into a PKCS#12 bundle that zsign consumes at sign time. Apple never
-sees the private key; it lives only on this machine.
+Generates the RSA keypair and certificate request sent to Apple, and signs an
+IPA with the certificate Apple returns. The private key never leaves this machine.
 """
 
 from __future__ import annotations
 
 import os
+import plistlib
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,7 +26,7 @@ P12_PASSWORD = "iPASide"
 
 
 class SigningError(EngineError):
-    """Raised when zsign fails to sign an IPA."""
+    """Raised when an IPA cannot be signed."""
 
 
 def generate_key_and_csr(common_name: str = "iPASide") -> tuple[bytes, str]:
@@ -49,7 +47,7 @@ def generate_key_and_csr(common_name: str = "iPASide") -> tuple[bytes, str]:
 
 
 def build_p12(cert_der: bytes, key_pem: bytes, password: str = P12_PASSWORD) -> bytes:
-    """Bundle a DER certificate + PEM private key into a PKCS#12 blob for zsign."""
+    """Bundle a DER certificate and PEM private key into a PKCS#12 blob."""
     key = serialization.load_pem_private_key(key_pem, password=None)
     cert = x509.load_der_x509_certificate(cert_der)
     encryption = (
@@ -125,69 +123,82 @@ def sign_ipa(
     zip_level: int = 6,
     temp_folder: str | None = None,
     legacy_sha1: bool = False,
+    extension_profiles: dict[str, str] | None = None,
+    substrate_provider: str = "legacy",
 ) -> dict[str, Any]:
-    """Re-sign an IPA with zsign (modern SHA256-only CodeDirectory + DER entitlements).
+    """Re-sign an IPA with iPASide's own signer.
 
-    ``legacy_sha1`` adds a SHA-1 CodeDirectory next to the SHA-256 one (zsign ``-L``). iOS 10
-    and earlier only understand SHA-1 and refuse a SHA-256-only signature with
-    ``ApplicationVerificationFailed``; newer iOS accepts either, so this is for those old
-    devices only (see ``sideload._needs_legacy_signature``).
+    The signature matches Tetherless: a SHA-1 CodeDirectory, a SHA-256 alternate,
+    an empty requirements blob, and a CMS signature over the development
+    certificate. ``legacy_sha1`` is accepted and ignored because both hashes are
+    always written, which is what iOS 10 and current iOS each require.
 
-    Options map to zsign flags and cover the "advanced" sideload knobs: bundle
-    id/name/version overrides, tweak (dylib) injection (optionally weak / into
-    extensions), file-sharing enablement, and the free-account strip flags.
+    ``entitlements`` replaces the profile's entitlements. It exists for apps that
+    need entries a profile does not spell out, such as LiveContainer's expanded
+    keychain groups. Every entitlement still has to be allowed by the profile.
 
-    ``entitlements`` replaces the profile's entitlements with an explicit plist.
-    Normally the profile's are exactly right and this should be left alone; it exists
-    for apps that need entries a profile does not spell out, such as LiveContainer's
-    128 expanded keychain groups. Every entitlement in the file must be covered by the
-    profile, or the signature is rejected outright rather than partly granted.
-
-    ``temp_folder`` is where zsign unpacks the IPA and assembles the signed copy -
-    by far the heaviest I/O of a sideload, since the whole app is written out and
-    re-zipped. Omitted, zsign uses the system temp directory. It must already
-    exist: zsign rejects a missing temp folder outright.
+    ``temp_folder`` is where the IPA is unpacked. It must already exist. Omitted,
+    the system temp directory is used. Files this run does not change are copied
+    still compressed.
     """
-    zsign = resolve_zsign()
-    cmd = [
-        zsign,
-        "-k", p12_path,
-        "-p", p12_password,
-        "-m", profile_path,
-        "-z", str(zip_level),
-        "-o", output_ipa,
-    ]
-    if temp_folder:
-        cmd += ["-t", temp_folder]
-    if legacy_sha1:
-        cmd.append("-L")
-    if bundle_id:
-        cmd += ["-b", bundle_id]
-    if display_name:
-        cmd += ["-n", display_name]
-    if bundle_version:
-        cmd += ["-r", bundle_version]
-    if remove_extensions:
-        cmd.append("-E")
-    if remove_watch:
-        cmd.append("-W")
-    if remove_uisd:
-        cmd.append("-U")
-    if enable_file_sharing:
-        cmd.append("-S")
-    if entitlements:
-        cmd += ["-e", entitlements]
-    for dylib in dylibs or []:
-        cmd += ["-l", dylib]
-    if dylibs and weak_dylibs:
-        cmd.append("-w")
-    if dylibs and inject_into_extensions:
-        cmd.append("-P")
-    cmd.append(input_ipa)
+    del legacy_sha1  # both hash types are always embedded
+    from .signer.binary import SignError
+    from .signer.package import sign_package
+    from .signer.profile import ProfileError
+    from .signer.wwdr import WWDRError, fetch
 
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise SigningError(
-            f"zsign failed (exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}"
+    try:
+        key, cert, chain = pkcs12.load_key_and_certificates(
+            Path(p12_path).read_bytes(),
+            p12_password.encode() if p12_password else None,
         )
-    return {"output": output_ipa, "log": proc.stdout}
+        if key is None or cert is None:
+            raise SigningError("The signing identity has no certificate and private key.")
+        certificate_der = cert.public_bytes(serialization.Encoding.DER)
+        private_key_der = key.private_bytes(
+            serialization.Encoding.DER,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        wwdr = _wwdr_from_chain(cert, chain) or fetch(certificate_der)
+        override = plistlib.loads(Path(entitlements).read_bytes()) if entitlements else None
+        if override is not None and not isinstance(override, dict):
+            raise SigningError("The entitlements file is not a plist dictionary.")
+        profiles = {
+            identifier: Path(path).read_bytes()
+            for identifier, path in (extension_profiles or {}).items()
+        }
+        return sign_package(
+            input_ipa,
+            output_ipa,
+            certificate_der=certificate_der,
+            private_key_der=private_key_der,
+            profile=Path(profile_path).read_bytes(),
+            wwdr_der=wwdr,
+            bundle_id=bundle_id,
+            display_name=display_name,
+            bundle_version=bundle_version,
+            remove_extensions=remove_extensions,
+            remove_watch=remove_watch,
+            remove_uisd=remove_uisd,
+            enable_file_sharing=enable_file_sharing,
+            dylibs=dylibs,
+            weak_dylibs=weak_dylibs,
+            inject_into_extensions=inject_into_extensions,
+            entitlements_override=override,
+            extension_profiles=profiles,
+            substrate_provider=substrate_provider,
+            zip_level=zip_level,
+            work_dir=temp_folder,
+        )
+    except (OSError, SigningError, SignError, WWDRError, ProfileError, ValueError) as exc:
+        if isinstance(exc, SigningError):
+            raise
+        raise SigningError(str(exc)) from exc
+
+
+def _wwdr_from_chain(leaf: x509.Certificate, chain: list[x509.Certificate] | None) -> bytes | None:
+    for extra in chain or []:
+        if extra.subject == leaf.issuer and extra.subject != extra.issuer:
+            return extra.public_bytes(serialization.Encoding.DER)
+    return None

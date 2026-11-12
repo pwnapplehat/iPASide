@@ -26,6 +26,7 @@ import zlib
 from pathlib import Path
 from typing import Any
 
+from . import macho_inject, zip_copy
 from .errors import EngineError
 
 
@@ -394,6 +395,27 @@ def inspect(ipa_path: str) -> dict[str, Any]:
     }
 
 
+def extension_identities(ipa_path: str) -> list[tuple[str, str]]:
+    """``(appex folder, bundle id)`` for every extension, at any depth."""
+    name = Path(ipa_path).name or ipa_path
+    found: list[tuple[str, str]] = []
+    with zipfile.ZipFile(ipa_path) as zf:
+        names = zf.namelist()
+        app = _app_relpath(names, name)
+        prefix = f"{app}/"
+        for entry in names:
+            if not entry.startswith(prefix) or "/EmbeddedPayload/" in entry:
+                continue
+            if not entry.endswith(".appex/Info.plist"):
+                continue
+            folder = entry[: -len("/Info.plist")].rsplit("/", 1)[-1]
+            info = plistlib.loads(zf.read(entry))
+            identifier = info.get("CFBundleIdentifier")
+            if isinstance(identifier, str) and identifier:
+                found.append((folder, identifier))
+    return found
+
+
 _APP_GROUPS_KEY = "com.apple.security.application-groups"
 
 
@@ -651,3 +673,134 @@ def prepare(
     finally:
         if not keep_workdir:
             shutil.rmtree(work, ignore_errors=True)
+
+
+def export_unsigned(
+    ipa_path: str,
+    output_path: str,
+    *,
+    strip_extensions: bool = True,
+    keep_extensions: list[str] | None = None,
+    remove_device_restrictions: bool = True,
+    bundle_id: str | None = None,
+    display_name: str | None = None,
+    bundle_version: str | None = None,
+    enable_file_sharing: bool = False,
+    dylibs: list[str] | None = None,
+    weak_dylibs: bool = False,
+    compresslevel: int = 1,
+) -> dict[str, Any]:
+    """Apply sideload options and tweaks, then write an IPA with no signature.
+
+    The same edits a signed sideload makes to Info.plist, extensions, and
+    injected libraries. Nothing is signed and no Apple ID is contacted. The
+    file is meant to be signed later by another tool.
+
+    ``keep_extensions`` names ``PlugIns`` folders to leave in place, such as
+    ``Widget.appex``. It only applies when ``strip_extensions`` is false. An
+    empty list keeps every extension. The watch app is still removed.
+    """
+    with zipfile.ZipFile(ipa_path) as zf:
+        names = zf.namelist()
+        app = _app_relpath(names, Path(ipa_path).name)
+        info_name = f"{app}/Info.plist"
+        if info_name not in names:
+            raise IpaError("This IPA's app has no Info.plist.")
+        info = plistlib.loads(zf.read(info_name))
+        exe_name = info.get("CFBundleExecutable")
+        if not isinstance(exe_name, str) or not exe_name:
+            raise IpaError("This IPA's app has no main executable.")
+        exe_path = f"{app}/{exe_name}"
+        if exe_path not in names:
+            raise IpaError("This IPA's app has no main executable.")
+        executable = bytearray(zf.read(exe_path))
+
+    changes: dict[str, Any] = {}
+    if bundle_id:
+        info["CFBundleIdentifier"] = bundle_id
+        changes["CFBundleIdentifier"] = bundle_id
+    if display_name:
+        info["CFBundleDisplayName"] = display_name
+        changes["CFBundleDisplayName"] = display_name
+    if bundle_version:
+        info["CFBundleShortVersionString"] = bundle_version
+        changes["CFBundleShortVersionString"] = bundle_version
+    if remove_device_restrictions and "UISupportedDevices" in info:
+        del info["UISupportedDevices"]
+        changes["UISupportedDevices"] = "removed"
+    if enable_file_sharing:
+        info["UIFileSharingEnabled"] = True
+        info["UISupportsDocumentBrowser"] = True
+        changes["UIFileSharingEnabled"] = True
+
+    removed = _extension_prefixes(names, app, strip_extensions, keep_extensions)
+    injected: list[str] = []
+    extras: dict[str, bytes] = {}
+    seen_names: set[str] = set()
+    for entry in dylibs or []:
+        source = Path(entry)
+        if not source.is_file():
+            raise IpaError(f"Tweak not found: {source.name or entry}")
+        if source.name in seen_names:
+            raise IpaError(f"Two tweaks are both named {source.name}.")
+        seen_names.add(source.name)
+        if not macho_inject.is_macho(source):
+            raise IpaError(f"{source.name} is not a Mach-O library.")
+        load_path = f"@executable_path/{source.name}"
+        macho_inject.inject_load_dylib(executable, load_path, weak=weak_dylibs)
+        extras[f"{app}/{source.name}"] = source.read_bytes()
+        injected.append(load_path)
+
+    def skip(name: str) -> bool:
+        return any(name.startswith(prefix) for prefix in removed)
+
+    zip_copy.repack(
+        ipa_path,
+        output_path,
+        skip=skip,
+        replace={
+            info_name: plistlib.dumps(info, fmt=plistlib.FMT_BINARY),
+            exe_path: bytes(executable),
+        },
+        extras=extras,
+        compresslevel=compresslevel,
+    )
+    return {
+        "input": ipa_path,
+        "output": str(output_path),
+        "app_bundle": app.split("/", 1)[1],
+        "name": info.get("CFBundleDisplayName") or info.get("CFBundleName") or Path(app).name,
+        "bundle_id": info.get("CFBundleIdentifier"),
+        "removed": sorted({prefix.rstrip("/").rsplit("/", 1)[-1] for prefix in removed}),
+        "info_plist_changes": changes,
+        "injected": injected,
+    }
+
+
+def _extension_prefixes(
+    names: list[str],
+    app: str,
+    strip_extensions: bool,
+    keep_extensions: list[str] | None,
+) -> list[str]:
+    """Directory prefixes to leave out of the repacked IPA."""
+    removed: list[str] = []
+    watch = f"{app}/Watch/"
+    if any(name.startswith(watch) for name in names):
+        removed.append(watch)
+    plugins = f"{app}/PlugIns/"
+    plugin_names = sorted(
+        child for child in _immediate_children(names, f"{app}/PlugIns") if child.endswith(".appex")
+    )
+    if not plugin_names:
+        return removed
+    if strip_extensions:
+        removed.append(plugins)
+        return removed
+    if keep_extensions is None:
+        return removed
+    keep = set(keep_extensions)
+    for child in plugin_names:
+        if child not in keep:
+            removed.append(f"{plugins}{child}/")
+    return removed

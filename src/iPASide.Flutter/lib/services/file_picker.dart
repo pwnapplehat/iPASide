@@ -20,6 +20,9 @@ abstract class FilePickerService {
 
   /// Where to write an exported pairing file; null when cancelled.
   Future<String?> savePairingFile({required String suggestedName});
+
+  /// Where to write an unsigned IPA; null when cancelled.
+  Future<String?> saveUnsignedIpa({required String suggestedName});
 }
 
 /// Shell-backed implementation.
@@ -45,6 +48,9 @@ class NativeFilePickerService implements FilePickerService {
 
   /// Title of the dialog that writes this PC's pairing file to disk.
   static const String pairingSaveTitle = 'Export pairing file';
+
+  /// Title of the dialog that writes an unsigned, tweak-injected IPA.
+  static const String unsignedIpaSaveTitle = 'Export unsigned IPA';
 
   /// Type dropdown for the IPA dialog.
   static const List<FileDialogFilter> ipaFilters = <FileDialogFilter>[
@@ -123,6 +129,19 @@ class NativeFilePickerService implements FilePickerService {
       filters: pairingFilters,
       fileName: suggestedName,
       defaultExtension: 'plist',
+    );
+  }
+
+  @override
+  Future<String?> saveUnsignedIpa({required String suggestedName}) async {
+    if (!Platform.isWindows) return null;
+    await _letTheTapPaint();
+
+    return WindowsFileDialog.save(
+      title: unsignedIpaSaveTitle,
+      filters: ipaFilters,
+      fileName: suggestedName,
+      defaultExtension: 'ipa',
     );
   }
 
