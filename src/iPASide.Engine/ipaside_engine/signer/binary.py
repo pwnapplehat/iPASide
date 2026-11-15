@@ -84,6 +84,7 @@ def _sign_thin(
     resource_hashes: tuple[bytes, bytes] | None,
     is_main_executable: bool | None,
 ) -> bytes:
+    executable = macho.ensure_signature_slot(executable)
     info = macho.parse_slice(executable)
     fields = x509_reader.read(certificate_der)
     requirements_blob = requirements.build_empty()

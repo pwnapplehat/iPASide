@@ -4,6 +4,12 @@ All notable changes to iPASide are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/) and
 [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.2.17] - 2026-11-15
+
+### Fixed
+
+- **A Mach-O with no signature can be signed.** Signing adds a code-signature slot when the file has unused space in its header, then fills it. LiveContainer's certificate importer is one of those files, so LiveContainer setup no longer stops with "no existing code signature to replace" (issue 18).
+
 ## [1.2.16] - 2026-11-12
 
 ### Added

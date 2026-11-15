@@ -1,8 +1,11 @@
-"""Replace an existing Mach-O code signature, from Tetherless ``MachOSigner.swift``.
+"""Replace an existing Mach-O code signature, or add the slot when the file has none.
 
-Inserting a brand-new ``LC_CODE_SIGNATURE`` is not part of this step. A binary
-that was already signed, which every App Store and sideloaded Mach-O is, has
-the load command. The new blob replaces the old one at the end of ``__LINKEDIT``.
+A binary that was already signed, which every App Store and sideloaded Mach-O is,
+has ``LC_CODE_SIGNATURE`` at the end of ``__LINKEDIT``. A library we inject, such
+as the LiveContainer certificate importer, does not. When the header still has
+unused zero padding, the missing command is written there and the signature is
+placed on a 16-byte boundary at the end of the file. The same replacement path
+then fills it in.
 """
 
 from __future__ import annotations
@@ -337,3 +340,53 @@ def replace_dylib_load_command(data: bytes, match, new_path: str, *, weak: bool)
         return None
     offset, cmd_size, _path = found
     return insert_load_dylib(remove_load_command(data, offset, cmd_size), new_path, weak=weak)
+
+
+def ensure_signature_slot(data: bytes) -> bytes:
+    """Give a thin Mach-O an empty code-signature slot when it has none.
+
+    The slot is a 16-byte ``LC_CODE_SIGNATURE`` written into the zero padding
+    after the load commands. Its data starts at the next 16-byte boundary at
+    the end of the file and is empty until the signer fills it.
+    """
+    big, header, ncmds, sizeofcmds = _header(data)
+    cursor = header
+    end = header + sizeofcmds
+    has_signature = False
+    has_linkedit = False
+    for _ in range(ncmds):
+        if cursor + 8 > end:
+            raise MachOError("truncated")
+        cmd = _u32(data, cursor, big)
+        cmdsize = _u32(data, cursor + 4, big)
+        if cmdsize < 8 or cursor + cmdsize > end:
+            raise MachOError("truncated")
+        if cmd == _LC_CODE_SIGNATURE:
+            has_signature = True
+            break
+        if cmd in (_LC_SEGMENT_64, _LC_SEGMENT):
+            name = bytes(data[cursor + 8:cursor + 24]).split(b"\x00", 1)[0]
+            if name == b"__LINKEDIT":
+                has_linkedit = True
+        cursor += cmdsize
+    if has_signature:
+        return data
+    if not has_linkedit:
+        raise MachOError("no __LINKEDIT segment")
+
+    insert_at = header + sizeofcmds
+    if insert_at + 16 > len(data) or any(data[insert_at:insert_at + 16]):
+        raise MachOError(
+            "this Mach-O has no code signature and no unused header space to add one"
+        )
+    result = bytearray(data)
+    pad = (16 - (len(result) % 16)) % 16
+    if pad:
+        result += bytes(pad)
+    _write_u32(result, insert_at, _LC_CODE_SIGNATURE, big)
+    _write_u32(result, insert_at + 4, 16, big)
+    _write_u32(result, insert_at + 8, len(result), big)
+    _write_u32(result, insert_at + 12, 0, big)
+    _write_u32(result, 16, ncmds + 1, big)
+    _write_u32(result, 20, sizeofcmds + 16, big)
+    return bytes(result)
